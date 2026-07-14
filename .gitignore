@@ -1,0 +1,4 @@
+build*/
+data/
+.vs/
+third_party/
