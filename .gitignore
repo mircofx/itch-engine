@@ -2,3 +2,5 @@ build*/
 data/
 .vs/
 third_party/
+CMakePresets.json
+out/
