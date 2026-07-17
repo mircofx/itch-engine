@@ -1,5 +1,6 @@
 #include "../itch/messages.hpp"
 #include "../replay/mmap_reader.hpp"
+#include "../book/order_book.hpp"
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -23,7 +24,11 @@ int main(int argc, char** argv) {
 	uint64_t xor_refs = 0;
 	uint64_t max_ts = 0;
 	uint64_t sym_hash = 0;
+	uint64_t total_missing = 0;
 
+	std::vector<OrderBook> books;   // indexed by stock_locate
+	books.resize(65536);			// stock_locate is u16
+	
 	const auto t0 = std::chrono::steady_clock::now();
 	while (p + 2 <= end) {
 		/*The length prefix, not sizeof(struct), drives advancement. Unknown/unhandled types cost nothing: we jump over them without decoding*/
@@ -51,6 +56,8 @@ int main(int argc, char** argv) {
 			for (char c : m.sym()) {
 				sym_hash = sym_hash * 31 + uint8_t(c);
 			}
+
+			books[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
 			break;
 		}
 		case 'F':
@@ -64,6 +71,8 @@ int main(int argc, char** argv) {
 			for (char c : mpid.a.sym()) {
 				sym_hash = sym_hash * 31 + uint8_t(c);
 			}
+
+			books[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
 			break;
 		}
 		case 'E':
@@ -73,6 +82,8 @@ int main(int argc, char** argv) {
 			max_ts = std::max(max_ts, oe.h.timestamp());
 			xor_refs ^= oe.order_ref();
 			sum_shares += oe.exec_shares();
+
+			books[oe.h.stock_locate()].reduce(oe.order_ref(), oe.exec_shares());
 			break;
 		}
 		case 'C':
@@ -83,6 +94,8 @@ int main(int argc, char** argv) {
 			xor_refs ^= oewp.e.order_ref();
 			sum_shares += oewp.e.exec_shares();
 			sum_price += oewp.exec_price();
+
+			books[oewp.e.h.stock_locate()].reduce(oewp.e.order_ref(), oewp.e.exec_shares());
 			break;
 		}
 		case 'X':
@@ -92,6 +105,8 @@ int main(int argc, char** argv) {
 			max_ts = std::max(max_ts, oc.h.timestamp());
 			xor_refs ^= oc.order_ref();
 			sum_shares += oc.cancelled_shares();
+
+			books[oc.h.stock_locate()].reduce(oc.order_ref(), oc.cancelled_shares());
 			break;
 		}
 		case 'D':
@@ -100,6 +115,8 @@ int main(int argc, char** argv) {
 			std::memcpy(&od, p, sizeof(od));
 			max_ts = std::max(max_ts, od.h.timestamp());
 			xor_refs ^= od.order_ref();
+
+			books[od.h.stock_locate()].erase(od.order_ref());
 			break;
 		}
 		case 'U':
@@ -111,6 +128,8 @@ int main(int argc, char** argv) {
 			xor_refs ^= orep.new_ref();
 			sum_price += orep.price();
 			sum_shares += orep.shares();
+
+			books[orep.h.stock_locate()].replace(orep.orig_ref(), orep.new_ref(), orep.price(), orep.shares());
 			break;
 		}
 		case 'P':
@@ -167,6 +186,23 @@ int main(int argc, char** argv) {
 	std::printf("\nA+F+U = %lu   D+X+E+U = %lu   ratio = %.3f\n", added, removed, double(removed) / double(added));
 
 	std::printf("acc      : shares=%lu price=%lu refs=%lx ts=%lu sym=%lx\n", sum_shares, sum_price, xor_refs, max_ts, sym_hash);
+
+	for (const auto& b : books) {
+		total_missing += b.missing_refs();
+	}
+
+	std::printf("missing_refs: %lu (%.4f%% of messages)\n", total_missing, 100.0*double(total_missing)/double(total));
+
+	int shown = 0;
+	for (size_t i = 0; i < books.size() && shown < 5; ++i) {
+		uint32_t bp, ap; uint64_t bs, as;
+		bool hb = books[i].best_bid(bp, bs);
+		bool ha = books[i].best_ask(ap, as);
+		if (hb && ha) {
+			std::printf("locate %zu: bid %u x%lu  |  ask %u x%lu  %s\n", i, bp, bs, ap, as, (bp < ap ? "ok" : "CROSSED!"));
+			++shown;
+		}
+	}
 
 	return 0;
 }
