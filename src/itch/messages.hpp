@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <concepts>
 #include <string_view>
+#include <cstring>
 
 namespace itch {
 
@@ -20,8 +21,17 @@ namespace itch {
         }
     }
 
-    // 6-byte (48-bit) big-endian timestamp -> u64, MSB first (host-independent)
-    [[gnu::always_inline]] constexpr uint64_t load_be48(const uint8_t* p) noexcept {
+    // Fast path: 1 load + 1 bswap + 1 shift.
+    // PRECONDITION: at least 8 readable bytes at p. Only valid for message types
+    // whose payload is >= 13 bytes (timestamp sits at header offset 5).
+    [[gnu::always_inline]] inline uint64_t load_be48(const uint8_t* p) noexcept {
+        uint64_t x;
+        std::memcpy(&x, p, 8);
+        return be(x) >> 16;
+    }
+
+    // Safe path: 6 loads, no over-read. For types too short for the 8-byte load.
+    [[gnu::always_inline]] constexpr uint64_t load_be48_safe(const uint8_t* p) noexcept {
         return (uint64_t(p[0]) << 40) | (uint64_t(p[1]) << 32) | (uint64_t(p[2]) << 24) | (uint64_t(p[3]) << 16) | (uint64_t(p[4]) << 8) | uint64_t(p[5]);
     }
 
@@ -36,7 +46,9 @@ namespace itch {
 
         uint16_t stock_locate() const noexcept { return be(stock_locate_be); }
         uint16_t tracking() const noexcept { return be(tracking_be); }
-        uint64_t timestamp() const noexcept { return load_be48(timestamp_be); }
+
+        uint64_t timestamp()      const noexcept { return load_be48(timestamp_be); }
+        uint64_t timestamp_safe() const noexcept { return load_be48_safe(timestamp_be); }
     };
     static_assert(sizeof(Header) == 11);
 

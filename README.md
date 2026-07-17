@@ -85,3 +85,20 @@ Sample data: `emi.nasdaq.com`. Not in the repo, it's 11 GB.
 - [ ] **M3**, lock-free SPSC queue, parser/book on separate cores
 - [ ] **M4**, MoldUDP64 transport, gap detection, recovery
 - [ ] latency histograms (rdtsc), not just throughput
+
+
+## Run
+Clean when I change CMake, compilers, or flags.
+```bash
+rm -rf build build-debug
+```
+
+Rebuild, after editing source.
+```bash
+cmake --build build -j
+```
+
+Warm the page cache.
+```bash
+cat ~/data/itch_2gb.bin > /dev/null
+```

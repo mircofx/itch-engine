@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cassert>
+#include <cstring>
+#include <algorithm>
 
 int main(int argc, char** argv) {
 	if (argc < 2) { std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]); return 1; }
@@ -16,6 +18,11 @@ int main(int argc, char** argv) {
 	/*Why not a map? allocation-free, no hashing, one cache line*/
 	std::array<uint64_t, 256> counts{};
 	uint64_t total = 0;
+	uint64_t sum_shares = 0;
+	uint64_t sum_price = 0;
+	uint64_t xor_refs = 0;
+	uint64_t max_ts = 0;
+	uint64_t sym_hash = 0;
 
 	const auto t0 = std::chrono::steady_clock::now();
 	while (p + 2 <= end) {
@@ -31,6 +38,104 @@ int main(int argc, char** argv) {
 
 		// free layout validation: on-wire len must match sizeof() for handled types
 		assert(itch::payload_len(char(type)) == 0 || itch::payload_len(char(type)) == len);
+
+		switch (type) {
+		case 'A':
+		{
+			itch::AddOrder m;
+			std::memcpy(&m, p, sizeof(m));
+			max_ts = std::max(max_ts, m.h.timestamp());
+			xor_refs ^= m.order_ref();
+			sum_shares += m.shares();
+			sum_price += m.price();
+			for (char c : m.sym()) {
+				sym_hash = sym_hash * 31 + uint8_t(c);
+			}
+			break;
+		}
+		case 'F':
+		{
+			itch::AddOrderMPID mpid;
+			std::memcpy(&mpid, p, sizeof(mpid));
+			max_ts = std::max(max_ts, mpid.a.h.timestamp());
+			xor_refs ^= mpid.a.order_ref();
+			sum_shares += mpid.a.shares();
+			sum_price += mpid.a.price();
+			for (char c : mpid.a.sym()) {
+				sym_hash = sym_hash * 31 + uint8_t(c);
+			}
+			break;
+		}
+		case 'E':
+		{
+			itch::OrderExecuted oe;
+			std::memcpy(&oe, p, sizeof(oe));
+			max_ts = std::max(max_ts, oe.h.timestamp());
+			xor_refs ^= oe.order_ref();
+			sum_shares += oe.exec_shares();
+			break;
+		}
+		case 'C':
+		{
+			itch::OrderExecWithPrice oewp;
+			std::memcpy(&oewp, p, sizeof(oewp));
+			max_ts = std::max(max_ts, oewp.e.h.timestamp());
+			xor_refs ^= oewp.e.order_ref();
+			sum_shares += oewp.e.exec_shares();
+			sum_price += oewp.exec_price();
+			break;
+		}
+		case 'X':
+		{
+			itch::OrderCancel oc;
+			std::memcpy(&oc, p, sizeof(oc));
+			max_ts = std::max(max_ts, oc.h.timestamp());
+			xor_refs ^= oc.order_ref();
+			sum_shares += oc.cancelled_shares();
+			break;
+		}
+		case 'D':
+		{
+			itch::OrderDelete od;
+			std::memcpy(&od, p, sizeof(od));
+			max_ts = std::max(max_ts, od.h.timestamp());
+			xor_refs ^= od.order_ref();
+			break;
+		}
+		case 'U':
+		{
+			itch::OrderReplace orep;
+			std::memcpy(&orep, p, sizeof(orep));
+			max_ts = std::max(max_ts, orep.h.timestamp());
+			xor_refs ^= orep.orig_ref();
+			xor_refs ^= orep.new_ref();
+			sum_price += orep.price();
+			sum_shares += orep.shares();
+			break;
+		}
+		case 'P':
+		{
+			itch::TradeNonCross tnc;
+			std::memcpy(&tnc, p, sizeof(tnc));
+			max_ts = std::max(max_ts, tnc.h.timestamp());
+			xor_refs ^= tnc.order_ref();
+			sum_shares += tnc.shares();
+			sum_price += tnc.price();
+			for (char c : tnc.sym()) {
+				sym_hash = sym_hash * 31 + uint8_t(c);
+			}
+			break;
+		}
+		case 'S':
+		{
+			itch::SystemEvent se;                 // 12 bytes: too short for the 8-byte load
+			std::memcpy(&se, p, sizeof(se));
+			max_ts = std::max(max_ts, se.h.timestamp_safe());
+			break;
+		}
+		default:
+			break;
+		}
 
 		p += len;
 	}
@@ -60,5 +165,8 @@ int main(int argc, char** argv) {
 	const uint64_t added = counts['A'] + counts['F'] + counts['U'];
 	const uint64_t removed = counts['D'] + counts['X'] + counts['E'] + counts['U'];
 	std::printf("\nA+F+U = %lu   D+X+E+U = %lu   ratio = %.3f\n", added, removed, double(removed) / double(added));
+
+	std::printf("acc      : shares=%lu price=%lu refs=%lx ts=%lu sym=%lx\n", sum_shares, sum_price, xor_refs, max_ts, sym_hash);
+
 	return 0;
 }
