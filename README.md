@@ -4,6 +4,74 @@ A NASDAQ TotalView-ITCH 5.0 feed handler and L3 order book reconstruction engine
 
 Written to find out how fast this can actually go on one core, and to have something concrete to point at when people ask what I've built. No runtime dependencies: Catch2 and Google Benchmark are test-only.
 
+## Layout of one message
+||||
+|---|----|---|
+|**Before the message** | **The message itself** |
+|2-byte length (big-endian)|11-byte HEADER|TYPE-SPECIFIC BODY
+|tells you how far to jump| every message has this, always 11 bytes|different per type|
+
+**Header, byte by byte:**
+
+off 0: msg_type (1) 'A', 'D', 'U', ... what kind of message\
+off 1: stock_locate (2) which instrument -> routing key\
+off 3: tracking (2) (we ignore)\
+off 5: timestamp (6) nanoseconds since midnight 
+
+Example, an ADD(type 'A', body = 25 bytes, total 36):\
+
+```text
+[len=36][A|loc=2|trk|ts.......|order_ref|B|shares|SYMBOL..|price]
+         \___________________/ \_________________________________/
+               header (11 B)              body (25 B)
+```
+
+**Messages processor**
+```text
+file:  [len][ msg ][len][   msg   ][len][ msg ][len][  msg  ] ...
+          |    |      |    |          |
+          |    |      |    |          +-- read len, jump
+          |    |      |    +-- decode, apply to book, jump by len
+          |    |      +-- read 2-byte length
+          |    +-- decode this message, apply to book
+          +-- read 2-byte length -> "next msg is 36 bytes"
+```
+
+p starts at the file begin.\
+loop:\
+    len = read 2 bytes at p "how big is the next one"\
+    p   += 2\
+    type = byte at p                  "what kind is it"\
+    loc  = 2 bytes at p+1             "which instrument"\
+    ... decode the fields we need, apply to books[loc] ...\
+    p   += len                        "jump to the next message"\
+
+
+The jump (p += len) is what makes it a stream walk. You never search for message boundaries, the length told you exactly where the next one starts. Unknown message types (H, I, Q, the ones you skip) cost nothing: you still read their length and jump over them without looking inside.
+
+Messages for all instruments are interleaved in time order:
+```text
+  time -->
+  [A loc=2][A loc=5][D loc=2][A loc=1][X loc=5][U loc=2][D loc=1] ...
+        |        |       |        |        |       |        |
+        v        v       v        v        v       v        v
+     book[2]  book[5] book[2]  book[1]  book[5] book[2]  book[1]
+```
+
+Each message carries its own stock_locate, so you demultiplex the single stream into thousands of per-instrument books on the fly. That's the whole job: one interleaved stream in, thousands of live books out, and the stock_locate on every message is what tells you which book each event belongs to.
+
+```text
+locate 2:  bid 287800 x500  |  ask 287900 x200   ok
+             \_____________/     \_____________/
+              highest price       lowest price
+              someone will        someone will
+              BUY at ($28.78)     SELL at ($28.79)
+
+  the 1-cent gap between them is the SPREAD.
+  "ok" = bid < ask, a sane market. crossed (bid >= ask) would mean a bug.
+```
+That's 64.9M messages replayed into live state with zero missing refs and no crossed books. The reconstruction is correct.
+
 ## Status
 
 **M1a, framing layer.** Done. The parser walks the raw ITCH file and classifies every message. It does not decode fields yet, that's next.
