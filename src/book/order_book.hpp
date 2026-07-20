@@ -4,18 +4,9 @@
 #include <vector>
 #include <cstdint>
 #include <cassert>
+#include "../book/types.hpp"
 
-struct Order {
-	uint64_t ref;		// reduntant of map key
-	uint32_t price;
-	uint32_t shares;
-	char side;
-};
-
-struct Level {
-	uint64_t total_shares;		// sum of shares of all orders at this price
-	uint32_t order_count;		// how many orders rest here
-};
+// OrderBook (the naive one) stores price levels in a std::map, a balanced binary tree. To find the level at price 287800, the CPU walks the tree, following pointers to nodes scattered randomly in memory. Each hop is likely a cache miss, roughly 100+ cycles stalled waiting on RAM. Correct, easy to write, slow.
 
 class OrderBook {
 	std::unordered_map<uint64_t, Order> orders_;
