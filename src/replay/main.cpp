@@ -10,6 +10,14 @@
 #include <cstring>
 #include <algorithm>
 
+// Book mode: 0 = naive only, 1 = ladder only, 2 = both + A/B validation
+#ifndef BOOK_MODE
+#define BOOK_MODE 2
+#endif
+
+#define USE_NAIVE (BOOK_MODE == 0||BOOK_MODE == 2)
+#define USE_LADDER (BOOK_MODE == 1||BOOK_MODE == 2)
+
 int main(int argc, char** argv) {
 	if (argc < 2) { std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]); return 1; }
 
@@ -25,14 +33,21 @@ int main(int argc, char** argv) {
 	uint64_t xor_refs = 0;
 	uint64_t max_ts = 0;
 	uint64_t sym_hash = 0;
+#if USE_NAIVE
 	uint64_t total_missing = 0;
+#endif
+#if BOOK_MODE == 2
 	uint64_t mismatch_count = 0;
+#endif
 
-	std::vector<OrderBook> books_naive;   // indexed by stock_locate
-	books_naive.resize(65536);			// stock_locate is u16
-
-	std::vector<LadderBook> books_fast;   // indexed by stock_locate
-	books_fast.resize(65536);			// stock_locate is u16
+#if USE_NAIVE
+	std::vector<OrderBook> books_naive;		// indexed by stock_locate
+	books_naive.resize(65536);				// stock_locate is u16  
+#endif // USE_NAIVE
+#if USE_LADDER
+	std::vector<LadderBook> books_fast;		// indexed by stock_locate
+	books_fast.resize(65536);				// stock_locate is u16
+#endif // USE_LADDER
 
 	const auto t0 = std::chrono::steady_clock::now();
 	while (p + 2 <= end) {
@@ -62,8 +77,12 @@ int main(int argc, char** argv) {
 				sym_hash = sym_hash * 31 + uint8_t(c);
 			}
 
+#if USE_NAIVE
 			books_naive[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
+#endif
+#if USE_LADDER
 			books_fast[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
+#endif
 			break;
 		}
 		case 'F':
@@ -78,8 +97,12 @@ int main(int argc, char** argv) {
 				sym_hash = sym_hash * 31 + uint8_t(c);
 			}
 
+#if USE_NAIVE
 			books_naive[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
+#endif // USE_NAIVE
+#if USE_LADDER
 			books_fast[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
+#endif // USE_LADDER
 			break;
 		}
 		case 'E':
@@ -90,8 +113,13 @@ int main(int argc, char** argv) {
 			xor_refs ^= oe.order_ref();
 			sum_shares += oe.exec_shares();
 
+#if USE_NAIVE
 			books_naive[oe.h.stock_locate()].reduce(oe.order_ref(), oe.exec_shares());
+#endif // USE_NAIVE
+#if USE_LADDER
 			books_fast[oe.h.stock_locate()].reduce(oe.order_ref(), oe.exec_shares());
+
+#endif // USE_LADDER
 			break;
 		}
 		case 'C':
@@ -103,8 +131,12 @@ int main(int argc, char** argv) {
 			sum_shares += oewp.e.exec_shares();
 			sum_price += oewp.exec_price();
 
+#if USE_NAIVE
 			books_naive[oewp.e.h.stock_locate()].reduce(oewp.e.order_ref(), oewp.e.exec_shares());
+#endif // USE_NAIVE
+#if USE_LADDER
 			books_fast[oewp.e.h.stock_locate()].reduce(oewp.e.order_ref(), oewp.e.exec_shares());
+#endif // USE_LADDER
 			break;
 		}
 		case 'X':
@@ -115,8 +147,12 @@ int main(int argc, char** argv) {
 			xor_refs ^= oc.order_ref();
 			sum_shares += oc.cancelled_shares();
 
+#if USE_NAIVE
 			books_naive[oc.h.stock_locate()].reduce(oc.order_ref(), oc.cancelled_shares());
+#endif // USE_NAIVE
+#if USE_LADDER
 			books_fast[oc.h.stock_locate()].reduce(oc.order_ref(), oc.cancelled_shares());
+#endif // USE_LADDER
 			break;
 		}
 		case 'D':
@@ -126,8 +162,12 @@ int main(int argc, char** argv) {
 			max_ts = std::max(max_ts, od.h.timestamp());
 			xor_refs ^= od.order_ref();
 
+#if USE_NAIVE
 			books_naive[od.h.stock_locate()].erase(od.order_ref());
+#endif // USE_NAIVE
+#if USE_LADDER
 			books_fast[od.h.stock_locate()].erase(od.order_ref());
+#endif // USE_LADDER
 			break;
 		}
 		case 'U':
@@ -140,8 +180,12 @@ int main(int argc, char** argv) {
 			sum_price += orep.price();
 			sum_shares += orep.shares();
 
+#if USE_NAIVE
 			books_naive[orep.h.stock_locate()].replace(orep.orig_ref(), orep.new_ref(), orep.price(), orep.shares());
+#endif // USE_NAIVE
+#if USE_LADDER
 			books_fast[orep.h.stock_locate()].replace(orep.orig_ref(), orep.new_ref(), orep.price(), orep.shares());
+#endif // USE_LADDER
 			break;
 		}
 		case 'P':
@@ -168,6 +212,7 @@ int main(int argc, char** argv) {
 			break;
 		}
 
+#if BOOK_MODE == 2
 		if (total % 1000000 == 0) {
 			for (size_t i = 1; i < 100; ++i) {
 				uint32_t p1, p2; uint64_t s1, s2;
@@ -179,6 +224,7 @@ int main(int argc, char** argv) {
 				}
 			}
 		}
+#endif
 
 		p += len;
 	}
@@ -211,6 +257,7 @@ int main(int argc, char** argv) {
 
 	std::printf("acc      : shares=%lu price=%lu refs=%lx ts=%lu sym=%lx\n", sum_shares, sum_price, xor_refs, max_ts, sym_hash);
 
+#if USE_NAIVE
 	for (const auto& b : books_naive) {
 		total_missing += b.missing_refs();
 	}
@@ -227,37 +274,42 @@ int main(int argc, char** argv) {
 			++shown;
 		}
 	}
+#endif
 
-	uint64_t full_mismatch = 0, lad_overflow = 0, lad_subtick = 0, lad_scans = 0;
+#if USE_LADDER
+	uint64_t lad_missing = 0, lad_overflow = 0, lad_subtick = 0;
+	for (const auto& b : books_fast) {
+		lad_missing += b.missing_refs();
+		lad_overflow += b.overflows();
+		lad_subtick += b.subticks();
+	}
+	std::printf("ladder   : missing=%lu overflow=%lu subtick=%lu\n",
+		lad_missing, lad_overflow, lad_subtick);
+#endif
+
+#if BOOK_MODE == 2
+	uint64_t full_mismatch = 0, lad_scans = 0;
 	for (size_t i = 0; i < books_naive.size(); ++i) {
-		uint32_t p1 = 0;
-		uint32_t p2 = 0;
-		uint32_t p3 = 0;
-		uint32_t p4 = 0;
-		uint64_t s1 = 0;
-		uint64_t s2 = 0;
-		uint64_t s3 = 0;
-		uint64_t s4 = 0;
+		uint32_t p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+		uint64_t s1 = 0, s2 = 0, s3 = 0, s4 = 0;
 		bool a1 = books_naive[i].best_bid(p1, s1);
 		bool b1 = books_fast[i].best_bid(p2, s2);
 		bool a2 = books_naive[i].best_ask(p3, s3);
 		bool b2 = books_fast[i].best_ask(p4, s4);
-		if (a1 != b1 || (a1 && (p1 != p2 || s1 != s2)))
-		{
+		if (a1 != b1 || (a1 && (p1 != p2 || s1 != s2))) {
 			full_mismatch++;
 		}
-		if (a2 != b2 || (a2 && (p3 != p4 || s3 != s4)))
-		{
+		if (a2 != b2 || (a2 && (p3 != p4 || s3 != s4))) {
 			full_mismatch++;
 		}
-		lad_overflow += books_fast[i].overflows();
-		lad_subtick += books_fast[i].subticks();
 		lad_scans += books_fast[i].scans();
 	}
 	std::printf("A/B      : periodic_mismatch=%lu  final_mismatch=%lu\n", mismatch_count, full_mismatch);
-	std::printf("ladder   : overflow=%lu subtick=%lu scan_steps=%lu\n", lad_overflow, lad_subtick, lad_scans);
+	std::printf("ladder   : scan_steps=%lu\n", lad_scans);
+#endif
 
-	// Two independently written books, running side by side over 64.9 million messages, agreed on best bid and best ask for every symbol. final_mismatch = 0.
+	/* Two independently written books, running side by side over 64.9 million messages, agreed on best bid and best ask for every symbol. final_mismatch = 0.
+	*/
 
 	return 0;
 }

@@ -141,6 +141,27 @@ cmake --build build -j
 ./build/itch_engine /path/to/01302019.NASDAQ_ITCH50
 ```
 
+Benchmark M2 with 3 different variants:
+```bash
+cmake -B build-naive  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13 \
+  -DITCH_BUILD_TESTS=OFF -DITCH_BUILD_BENCH=OFF \
+  -DCMAKE_CXX_FLAGS="-DBOOK_MODE=0"
+
+cmake -B build-ladder -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13 \
+  -DITCH_BUILD_TESTS=OFF -DITCH_BUILD_BENCH=OFF \
+  -DCMAKE_CXX_FLAGS="-DBOOK_MODE=1"
+  
+cmake --build build-naive -j
+cmake --build build-ladder -j
+```
+
+Then measure:
+```bash
+cat ~/data/itch_2gb.bin > /dev/null
+for i in 1 2 3; do ./build-naive/itch_engine ~/data/itch_2gb.bin | grep rate; done
+for i in 1 2 3; do ./build-ladder/itch_engine ~/data/itch_2gb.bin | grep rate; done
+```
+
 Requires GCC 13+ or Clang 17+ (needs `std::byteswap`), CMake >= 3.25. Linux only, `mmap` is POSIX.
 
 Sample data: `emi.nasdaq.com`. Not in the repo, it's 11 GB.
