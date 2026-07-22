@@ -2,11 +2,25 @@
 #include <vector>
 #include <cstdint>
 #include <cassert>
+#include <unordered_map>
 #include "../book/types.hpp"
 
 #ifndef HASH_MODE
 #define HASH_MODE 0	// 0, identity, 1 fibonacci
 #endif
+class MapOrderTable {
+	std::unordered_map<uint64_t, Slot> m_;
+public:
+	Slot* find(uint64_t ref) noexcept {
+		auto it = m_.find(ref);
+		return (it == m_.end()) ? nullptr : &it->second;
+	}
+	void insert(uint64_t ref, uint32_t price, uint32_t shares, char side) {
+		m_[ref] = Slot{ ref, price, shares, side };
+	}
+	bool erase(uint64_t ref) noexcept { return m_.erase(ref) != 0; }
+	uint32_t size() const noexcept { return uint32_t(m_.size()); }
+};
 
 class OrderTable {
 	std::vector<Slot> slots_;
@@ -22,7 +36,7 @@ class OrderTable {
 		return uint32_t(ref) & mask_;
 #else
 		// fibonacci mixing: one multiply, spreads keys uniformly, kills clustering, but throws away the sequential locality.
-		return uint32_t((ref * 0X9E3779B97F4AC15ull) >> (64 - log2_cap_));
+		return uint32_t((ref * 0x9E3779B97F4A7C15ull) >> (64 - log2_cap_));
 #endif
 	}
 
@@ -79,7 +93,6 @@ public:
 
 	void insert(uint64_t ref, uint32_t price, uint32_t shares, char side) {
 		assert(ref != 0 && "ref 0 collides with the empty sentinel");
-		assert(find(ref) == nullptr && "duplicate live ref");
 
 		if ((size_ + 1) * 2 >= capacity()) {
 			grow();

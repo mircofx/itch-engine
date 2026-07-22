@@ -1,4 +1,5 @@
 build*/
+bench-*/
 data/
 .vs/
 third_party/

@@ -13,7 +13,15 @@ class LadderBook {
 	static constexpr uint32_t WIDTH = 8192;
 	uint64_t miss_reduce_ = 0, miss_erase_ = 0, miss_replace_ = 0;
 
+#ifndef TABLE_MODE
+#define TABLE_MODE 1        // 0 = std::unordered_map, 1 = OrderTable
+#endif
+
+#if TABLE_MODE == 0
+	MapOrderTable orders_;
+#else
 	OrderTable orders_;
+#endif
 	std::vector<Level> bid_levels_;
 	std::vector<Level> ask_levels_;
 
