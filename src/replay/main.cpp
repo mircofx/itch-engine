@@ -21,6 +21,22 @@
 int main(int argc, char** argv) {
 	if (argc < 2) { std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]); return 1; }
 
+	OrderTable t;
+	const uint64_t N = 5000;
+	std::vector<uint64_t> keys;
+	// deliberately collide: multiples of a power of two >= final capacity
+	for (uint64_t k = 0; k < N; ++k) keys.push_back(1 + k * 4096);
+	for (uint64_t r : keys) t.insert(r, uint32_t(r % 100000), 100, 'B');
+	// erase in a scattered order, then verify survivors
+	for (size_t k = 0; k < keys.size(); k += 3) t.erase(keys[k]);
+	uint64_t lost = 0, zombie = 0;
+	for (size_t k = 0; k < keys.size(); ++k) {
+		Slot* s = t.find(keys[k]);
+		if (k % 3 == 0) { if (s) zombie++; }
+		else { if (!s) lost++; }
+	}
+	std::printf("COLLIDE TEST: lost=%lu zombie=%lu\n", lost, zombie);
+
 	MmapReader r(argv[1]);
 	const uint8_t* p = r.data();
 	const uint8_t* end = p + r.size();

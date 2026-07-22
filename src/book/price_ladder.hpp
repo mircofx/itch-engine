@@ -1,18 +1,19 @@
 #pragma once
-#include <unordered_map>
 #include <vector>
 #include <map>
 #include <cstdint>
 #include <cassert>
 #include "../book/types.hpp"
+#include "../book/order_table.hpp"
 
 // LadderBook (the fast one) stores price levels in a flat array where the price is the index. levels[(price - base) / 100] and you're there. One arithmetic operation, one memory access, and neighbouring price levels sit next to each other in memory, so the CPU's prefetcher works in your favour.
 
 class LadderBook {
 	static constexpr uint32_t TICK = 100;
 	static constexpr uint32_t WIDTH = 8192;
+	uint64_t miss_reduce_ = 0, miss_erase_ = 0, miss_replace_ = 0;
 
-	std::unordered_map<uint64_t, Order> orders_;
+	OrderTable orders_;
 	std::vector<Level> bid_levels_;
 	std::vector<Level> ask_levels_;
 
@@ -40,7 +41,7 @@ class LadderBook {
 		{
 			return false;      // sub-penny: not representable
 		}
-		if (price < base_) 
+		if (price < base_)
 		{
 			return false;
 		}
@@ -117,65 +118,66 @@ public:
 			lvl.order_count += 1;
 		}
 
-		orders_[ref] = Order{ ref, price, shares, side };
+		orders_.insert(ref, price, shares, side);
 	}
 
 	void reduce(uint64_t ref, uint32_t shares_removed) {
-		auto it = orders_.find(ref);
-		if (it == orders_.end()) {
+		Slot* o = orders_.find(ref);
+		if (o == nullptr) {
+			miss_reduce_++;
 			missing_ref_count++;
 			return;
 		}
 
-		Order& o = it->second;
-		assert(shares_removed <= o.shares);
+		assert(shares_removed <= o->shares);
 
 		bool in_ov = false;
-		Level* lvl = find_level(o.side, o.price, in_ov);
+		Level* lvl = find_level(o->side, o->price, in_ov);
 		assert(lvl != nullptr);
 
 		lvl->total_shares -= shares_removed;
-		o.shares -= shares_removed;
+		o->shares -= shares_removed;
 
-		if (o.shares == 0) {
+		if (o->shares == 0) {
 			lvl->order_count -= 1;
-			// ladder slots are never erased: an empty slot is just zeros.
-			// overflow entries ARE erased, to keep the map small.
-			if (lvl->order_count == 0 && in_ov)
-			{
-				side_overflow(o.side).erase(o.price);
+			if (lvl->order_count == 0 && in_ov) {
+				side_overflow(o->side).erase(o->price);
 			}
-			orders_.erase(it);
+			orders_.erase(ref);
 		}
 	}
 
 	void erase(uint64_t ref) {
-		auto it = orders_.find(ref);
-		if (it == orders_.end()) {
+		Slot* o = orders_.find(ref);
+		if (o == nullptr)
+		{
 			missing_ref_count++;
+			miss_erase_++;
 			return;
 		}
 
-		Order& o = it->second;
 		bool in_ov = false;
-		Level* lvl = find_level(o.side, o.price, in_ov);
+		Level* lvl = find_level(o->side, o->price, in_ov);
 		assert(lvl != nullptr);
 
-		lvl->total_shares -= o.shares;
+		lvl->total_shares -= o->shares;
 		lvl->order_count -= 1;
 		if (lvl->order_count == 0 && in_ov)
 		{
-			side_overflow(o.side).erase(o.price);
+			side_overflow(o->side).erase(o->price);
 		}
-		orders_.erase(it);
+		orders_.erase(ref);
 	}
 
 	void replace(uint64_t old_ref, uint64_t new_ref, uint32_t new_price, uint32_t new_shares) {
-		auto it = orders_.find(old_ref);
-		if (it == orders_.end()) {
-			missing_ref_count++; return;
+		Slot* o = orders_.find(old_ref);
+		if (o == nullptr) {
+			missing_ref_count++;
+			miss_replace_++;
+			return;
 		}
-		char side = it->second.side;
+
+		char side = o->side;
 		erase(old_ref);
 		add(new_ref, side, new_price, new_shares);
 	}
