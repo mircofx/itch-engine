@@ -2,6 +2,7 @@
 #include "../replay/mmap_reader.hpp"
 #include "../book/order_book.hpp"
 #include "../book/price_ladder.hpp"
+#include "../core/spsc_queue.hpp"
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -326,6 +327,11 @@ int main(int argc, char** argv) {
 
 	/* Two independently written books, running side by side over 64.9 million messages, agreed on best bid and best ask for every symbol. final_mismatch = 0.
 	*/
+
+	{
+		SpcsQueue<int, 4> q;
+
+	}
 
 	return 0;
 }
