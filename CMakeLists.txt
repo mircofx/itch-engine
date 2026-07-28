@@ -1,6 +1,8 @@
 ﻿cmake_minimum_required(VERSION 3.25)
 project(itch_engine VERSION 0.1.0 LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -28,9 +30,12 @@ if(ITCH_NATIVE)
   target_compile_options(itch_flags INTERFACE -march=native)
 endif()
 
-add_executable(itch_engine src/replay/main.cpp)
+add_executable(itch_engine          src/replay/main.cpp)
+add_executable(itch_engine_threaded src/replay/main_threaded.cpp)
+target_link_libraries(itch_engine          PRIVATE itch_flags)
+target_link_libraries(itch_engine_threaded PRIVATE itch_flags Threads::Threads)
 target_include_directories(itch_engine PRIVATE src)
-target_link_libraries(itch_engine PRIVATE itch_flags)
+target_include_directories(itch_engine_threaded PRIVATE src)
 
 include(FetchContent)
 if(ITCH_BUILD_TESTS)
