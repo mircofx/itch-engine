@@ -97,5 +97,17 @@ int main(int argc, char** argv) {
 		}
 	}
 
+    if (argc >= 3) {
+        FILE* f = std::fopen(argv[2], "w");
+        for (size_t i = 0; i < books.size(); ++i) {
+            uint32_t bp, ap; uint64_t bs, as;
+            bool hb = books[i].best_bid(bp, bs);
+            bool ha = books[i].best_ask(ap, as);
+            if (hb || ha)
+                std::fprintf(f, "%zu %u %lu %u %lu\n", i, bp, bs, ap, as);
+        }
+        std::fclose(f);
+    }
+
 	return 0;
 }
