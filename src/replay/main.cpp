@@ -2,7 +2,7 @@
 #include "../replay/mmap_reader.hpp"
 #include "../book/order_book.hpp"
 #include "../book/price_ladder.hpp"
-#include "../core/spsc_queue.hpp"
+#include "../core/command.hpp"
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -97,9 +97,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
 #endif
-#if USE_LADDER
-			books_fast[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
-#endif
 			break;
 		}
 		case 'F':
@@ -117,9 +114,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
 #endif // USE_NAIVE
-#if USE_LADDER
-			books_fast[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
-#endif // USE_LADDER
 			break;
 		}
 		case 'E':
@@ -133,10 +127,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[oe.h.stock_locate()].reduce(oe.order_ref(), oe.exec_shares());
 #endif // USE_NAIVE
-#if USE_LADDER
-			books_fast[oe.h.stock_locate()].reduce(oe.order_ref(), oe.exec_shares());
-
-#endif // USE_LADDER
 			break;
 		}
 		case 'C':
@@ -151,9 +141,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[oewp.e.h.stock_locate()].reduce(oewp.e.order_ref(), oewp.e.exec_shares());
 #endif // USE_NAIVE
-#if USE_LADDER
-			books_fast[oewp.e.h.stock_locate()].reduce(oewp.e.order_ref(), oewp.e.exec_shares());
-#endif // USE_LADDER
 			break;
 		}
 		case 'X':
@@ -167,9 +154,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[oc.h.stock_locate()].reduce(oc.order_ref(), oc.cancelled_shares());
 #endif // USE_NAIVE
-#if USE_LADDER
-			books_fast[oc.h.stock_locate()].reduce(oc.order_ref(), oc.cancelled_shares());
-#endif // USE_LADDER
 			break;
 		}
 		case 'D':
@@ -182,9 +166,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[od.h.stock_locate()].erase(od.order_ref());
 #endif // USE_NAIVE
-#if USE_LADDER
-			books_fast[od.h.stock_locate()].erase(od.order_ref());
-#endif // USE_LADDER
 			break;
 		}
 		case 'U':
@@ -200,9 +181,6 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 			books_naive[orep.h.stock_locate()].replace(orep.orig_ref(), orep.new_ref(), orep.price(), orep.shares());
 #endif // USE_NAIVE
-#if USE_LADDER
-			books_fast[orep.h.stock_locate()].replace(orep.orig_ref(), orep.new_ref(), orep.price(), orep.shares());
-#endif // USE_LADDER
 			break;
 		}
 		case 'P':
@@ -229,6 +207,13 @@ int main(int argc, char** argv) {
 			break;
 		}
 
+#if USE_LADDER
+		Command cmd;
+		if (decode(p, type, cmd)) {
+			apply_command(books_fast, cmd);
+		}
+#endif
+
 #if BOOK_MODE == 2
 		if (total % 1000000 == 0) {
 			for (size_t i = 1; i < 100; ++i) {
@@ -245,6 +230,7 @@ int main(int argc, char** argv) {
 
 		p += len;
 	}
+
 	const auto t1 = std::chrono::steady_clock::now();
 
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
@@ -327,11 +313,6 @@ int main(int argc, char** argv) {
 
 	/* Two independently written books, running side by side over 64.9 million messages, agreed on best bid and best ask for every symbol. final_mismatch = 0.
 	*/
-
-	{
-		SpcsQueue<int, 4> q;
-
-	}
 
 	return 0;
 }
