@@ -21,9 +21,15 @@ namespace itch {
         }
     }
 
+    // Trust-boundary check: 'side' is the one field both books branch on with a bare (side == 'B') ? bids : asks ternary (order_book.hpp, price_ladder.hpp).
+    // Anything other than 'B'/'S' -- corrupt feed, a framing desync upstream, a bad cast -- falls through to the asks branch *silently*, and it does so identically in both the naive oracle and the fast path, since both read this same byte off the wire. An A/B diff between them can never catch that:
+    // they'd agree on the wrong answer. So this gets checked once, right where the byte enters the system (decode() for the fast path, main.cpp for the naive path), not deep inside the book. One branch, only on the two message types ('A'/'F') that introduce a fresh side -- 'U' inherits its side from the existing order lookup in both books, so it can't smuggle in a bad one.
+    [[gnu::always_inline]] constexpr bool is_valid_side(char side) noexcept {
+        return side == 'B' || side == 'S';
+    }
+
     // Fast path: 1 load + 1 bswap + 1 shift.
-    // PRECONDITION: at least 8 readable bytes at p. Only valid for message types
-    // whose payload is >= 13 bytes (timestamp sits at header offset 5).
+    // PRECONDITION: at least 8 readable bytes at p. Equivalently: safe only when called against a type T with sizeof(T) >= 13 (timestamp_be sits at header offset 5, and the load touches offsets 5..12). SystemEvent (12 bytes) is the only handled type below this line — routed to timestamp_safe() instead. Any future message type must clear sizeof(T) >= 13 to use this path.
     [[gnu::always_inline]] inline uint64_t load_be48(const uint8_t* p) noexcept {
         uint64_t x;
         std::memcpy(&x, p, 8);
@@ -52,13 +58,16 @@ namespace itch {
     };
     static_assert(sizeof(Header) == 11);
 
-    // S = 12
+    // S = 12 bytes
+    // Routed to timestamp_safe() instead of the fast load_be48.
     struct SystemEvent {
         Header h;
         char event_code;
     };
 
-    // A = 36
+    // All the following object occupy more than 13 bytes (12+1 for type) -> fast path.
+
+    // A = 36 bytes
     struct AddOrder {
         Header h;
         uint64_t order_ref_be;
@@ -72,13 +81,13 @@ namespace itch {
         std::string_view sym() const noexcept { return { stock, 8 }; }
     };
 
-    // F = 40
+    // F = 40 bytes
     struct AddOrderMPID {
         AddOrder a;
         char attribution[4];
     };
 
-    // E = 31
+    // E = 31 bytes
     struct OrderExecuted {
         Header h;
         uint64_t order_ref_be;
@@ -89,7 +98,7 @@ namespace itch {
         uint64_t match_num() const noexcept { return be(match_num_be); }
     };
 
-    // C = 36
+    // C = 36 bytes
     struct OrderExecWithPrice {
         OrderExecuted e;
         char printable;
@@ -97,7 +106,7 @@ namespace itch {
         uint32_t exec_price() const noexcept { return be(exec_price_be); }
     };
 
-    // X = 23
+    // X = 23 bytes
     struct OrderCancel {
         Header h;
         uint64_t order_ref_be;
@@ -106,14 +115,14 @@ namespace itch {
         uint32_t cancelled_shares() const noexcept { return be(cancelled_shares_be); }
     };
 
-    // D = 19
+    // D = 19 bytes
     struct OrderDelete {
         Header h;
         uint64_t order_ref_be;
         uint64_t order_ref() const noexcept { return be(order_ref_be); }
     };
 
-    // U = 35
+    // U = 35 bytes
     struct OrderReplace {
         Header h;
         uint64_t orig_ref_be;
@@ -126,7 +135,7 @@ namespace itch {
         uint32_t price() const noexcept { return be(price_be); }
     };
 
-    // P = 44
+    // P = 44 bytes
     struct TradeNonCross {
         Header h;
         uint64_t order_ref_be;

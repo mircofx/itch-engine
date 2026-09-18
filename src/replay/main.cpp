@@ -53,6 +53,10 @@ int main(int argc, char** argv) {
 #if USE_NAIVE
 	uint64_t total_missing = 0;
 #endif
+	// Malformed 'side' byte on an 'A'/'F' message (not 'B'/'S'). 
+	// Both books used to branch on this with a bare (side == 'B') ? bids : asks ternary, so a corrupt byte misrouted silently (and identically) in both the naive oracle and the fast path, since both read it off the same wire location.
+	// The A/B diff below can't see that: two books agreeing on the wrong answer looks the same as two books agreeing on the right one. So this is checked at each path's own entry point instead (here, and in decode() for the fast path), using the same itch::is_valid_side() predicate; not deep inside the book, and not "trust the other book to catch it."
+	uint64_t malformed_side = 0;
 #if BOOK_MODE == 2
 	uint64_t mismatch_count = 0;
 #endif
@@ -81,6 +85,10 @@ int main(int argc, char** argv) {
 		// free layout validation: on-wire len must match sizeof() for handled types
 		assert(itch::payload_len(char(type)) == 0 || itch::payload_len(char(type)) == len);
 
+
+		// Every case below memcpy's wire bytes into a stack-local struct before calling any accessor, rather than reinterpret_cast p directly. 
+		// - reinterpreting raw mmap bytes as a typed object without memcpy/std::start_lifetime_as is strict-alignasing violation regardless or pragma pack
+		// - load_be48's fast path reads 8 bytes for a 6 byte field, on the last message of a file whose size is a multiple of the page size, that overread crosses into an unmapped page (SIGSEGV) if run against p directly. Both risks vanish once decoding runs against the stack copy instead.
 		switch (type) {
 		case 'A':
 		{
@@ -95,7 +103,11 @@ int main(int argc, char** argv) {
 			}
 
 #if USE_NAIVE
-			books_naive[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
+			if (itch::is_valid_side(m.side)) {
+				books_naive[m.h.stock_locate()].add(m.order_ref(), m.side, m.price(), m.shares());
+			} else {
+				++malformed_side;
+			}
 #endif
 			break;
 		}
@@ -112,7 +124,11 @@ int main(int argc, char** argv) {
 			}
 
 #if USE_NAIVE
-			books_naive[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
+			if (itch::is_valid_side(mpid.a.side)) {
+				books_naive[mpid.a.h.stock_locate()].add(mpid.a.order_ref(), mpid.a.side, mpid.a.price(), mpid.a.shares());
+			} else {
+				++malformed_side;
+			}
 #endif // USE_NAIVE
 			break;
 		}
@@ -266,6 +282,7 @@ int main(int argc, char** argv) {
 	}
 
 	std::printf("missing_refs: %lu (%.4f%% of messages)\n", total_missing, 100.0 * double(total_missing) / double(total));
+	std::printf("malformed_side: %lu (%.4f%% of messages) -- 'A'/'F' dropped by both books before either touched them\n", malformed_side, 100.0 * double(malformed_side) / double(total));
 
 	int shown = 0;
 	for (size_t i = 0; i < books_naive.size() && shown < 5; ++i) {
