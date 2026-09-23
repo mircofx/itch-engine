@@ -87,13 +87,16 @@ public:
 				return nullptr;
 			}
 
-			i=(i + 1)& mask_;
+			i = (i + 1) & mask_;
 		}
 	}
 
 	void insert(uint64_t ref, uint32_t price, uint32_t shares, char side) {
 		assert(ref != 0 && "ref 0 collides with the empty sentinel");
 
+		// Grow when this insert would push occupancy past 50%, not 80-90% like most open-addressing tables. Below 50%, a probe is more likely to land on an empty slot fast; 
+		// past it, chains lengthen non-linearly, and since find() is almost always a hit (execute/ cancel/delete on a live order), that shows up as tail latency, not just average probe count. 
+		// ~6MB extra at 200k orders -> cheap next to L3.
 		if ((size_ + 1) * 2 >= capacity()) {
 			grow();
 		}
@@ -130,4 +133,4 @@ public:
 		}
 		return true;
 	}
-};	// grow when size_ *2 >= capacity ()
+};

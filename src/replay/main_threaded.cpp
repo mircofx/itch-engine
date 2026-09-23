@@ -9,9 +9,7 @@
 #include <vector>
 
 // Parse the file, decode each message to a Command, push it. Touches only the mmap and the queue. Never the book.
-static void producer(const MmapReader& r,
-    SpscQueue<Command, 1 << 16>& q,
-    std::atomic<bool>& done) {
+static void producer(const MmapReader& r, SpscQueue<Command, 1 << 16>& q, std::atomic<bool>& done) {
     const uint8_t* p = r.data();
     const uint8_t* end = p + r.size();
     uint64_t pushed = 0;
@@ -27,7 +25,9 @@ static void producer(const MmapReader& r,
                 /* spin: queue is full, consumer is behind */
             }
             if ((++pushed % 10000000) == 0)
+            {
                 std::fprintf(stderr, "producer: %lu pushed\n", pushed);
+            }
         }
 
         p += len;   // ALWAYS advance, even for messages decode() skips
@@ -37,9 +37,7 @@ static void producer(const MmapReader& r,
 }
 
 // Pop Commands, apply to the book. Touches only the queue and the book.
-static void consumer(std::vector<LadderBook>& books,
-    SpscQueue<Command, 1 << 16>& q,
-    std::atomic<bool>& done) {
+static void consumer(std::vector<LadderBook>& books, SpscQueue<Command, 1 << 16>& q, std::atomic<bool>& done) {
     Command c;
     uint64_t popped = 0;
 
@@ -47,11 +45,16 @@ static void consumer(std::vector<LadderBook>& books,
         if (q.try_pop(c)) {
             apply_command(books, c);
             if ((++popped % 10000000) == 0)
+            {
                 std::fprintf(stderr, "consumer: %lu popped\n", popped);
+            }
         }
         else if (done.load(std::memory_order_acquire)) {
             // Producer finished and the queue looked empty. Between the failed pop and this done-check it may have pushed its last items, so drain once more before quitting, or the tail of the feed is lost.
-            while (q.try_pop(c)) apply_command(books, c);
+            while (q.try_pop(c)) 
+            {
+                apply_command(books, c);
+            }
             break;   // consumer is finished
         }
         // else: queue momentarily empty, producer still running -> spin
@@ -104,7 +107,9 @@ int main(int argc, char** argv) {
             bool hb = books[i].best_bid(bp, bs);
             bool ha = books[i].best_ask(ap, as);
             if (hb || ha)
+            {
                 std::fprintf(f, "%zu %u %lu %u %lu\n", i, bp, bs, ap, as);
+            }
         }
         std::fclose(f);
     }

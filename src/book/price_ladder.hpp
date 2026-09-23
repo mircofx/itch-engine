@@ -10,7 +10,7 @@
 
 class LadderBook {
 	static constexpr uint32_t TICK = 100;
-	static constexpr uint32_t WIDTH = 8192;
+	static constexpr uint32_t WIDTH = 8192;			// circa 81.92USD window. Sized to avoid overflow, not for cache. Width has ~no effect on miss/msg (ref README)
 	uint64_t miss_reduce_ = 0, miss_erase_ = 0, miss_replace_ = 0;
 
 #ifndef TABLE_MODE
@@ -31,8 +31,8 @@ class LadderBook {
 	std::map<uint32_t, Level> bid_overflow_;
 	std::map<uint32_t, Level> ask_overflow_;
 
-	mutable uint32_t best_bid_hint_ = 0;
-	mutable uint32_t best_ask_hint_ = WIDTH;
+	mutable uint32_t best_bid_hint_ = 0;		// only moves up on add(). Stale once erase() empties the top level -> O(WIDTH) scan
+	mutable uint32_t best_ask_hint_ = WIDTH;	// same, mirrored for asks
 
 	uint64_t missing_ref_count = 0;
 	uint64_t overflow_count = 0;
@@ -42,8 +42,7 @@ class LadderBook {
 	uint32_t to_price(uint32_t idx) const { return base_ + idx * TICK; }
 
 	// Single source of truth for "does this price live in the array?"
-	// Must be identical on the add path and the find path, or adds and
-	// deletes route to different places and the accounting silently breaks.
+	// Must be identical on the add path and the find path, or adds and deletes route to different places and the accounting silently breaks.
 	bool to_slot(uint32_t price, uint32_t& idx) const {
 		if ((price % TICK) != 0)
 		{
@@ -190,8 +189,7 @@ public:
 		add(new_ref, side, new_price, new_shares);
 	}
 
-	// Best price may live in the ladder OR in the overflow map. Check both,
-	// take the better. Bids want the highest price, asks the lowest.
+	// Best price may live in the ladder OR in the overflow map. Check both, take the better. Bids want the highest price, asks the lowest.
 	bool best_bid(uint32_t& price, uint64_t& shares) const {
 		uint32_t lp = 0;
 		uint64_t ls = 0;
