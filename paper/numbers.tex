@@ -1,0 +1,36 @@
+% Numeric macros are generated from results/ by make_numbers.py; prose that interprets them lives here.
+\input{numbers_auto.tex}
+
+\newcommand{\MthreeVerdictShort}{is about 3\% \emph{slower} when the data is cached in memory}
+
+\newcommand{\MthreeDecisionCell}{Cached slice: threaded \SliceDelta{} (median), slower in 20 of 25 interleaved pairs.
+Uncached full day: \FullDelta, noisy. Small effect, sign depends on I/O. Confirmed.}
+
+\newcommand{\CountersComment}{%
+The rerun matches the original within a few percent, on code that has changed since (M3, side validation), and every conclusion holds.
+The open-addressed table cuts instructions by 27\% and misses by 39\% compared with \code{unordered\_map}.
+Fibonacci hashing uses 4\% fewer instructions than identity hashing, with the same misses.
+Ladder width shows no trend: miss/msg goes 9.71, 9.24, 10.21, 9.51 from $W{=}8192$ down to $W{=}512$, and the instruction count is identical (15.27\,G) for all four.
+Rerunning also qualifies one claim from the original write-up, that the counters are deterministic. \emph{Instructions} are, to four significant figures.
+\emph{Cache misses} vary by about $\pm5\%$ between builds that differ only in an unused allocation size, so miss differences below about 10\% cannot be resolved here.
+The table's 39\% is well above that; the ladder-width and hash differences are not.}
+
+\newcommand{\MthreeComment}{%
+\textbf{An upper bound before any measurement.} On cached data, the most the split can gain is the decode share of the per-message cost:
+about $4/259 \approx 1.5\%$, and that is before paying anything for the handoff. The earlier figure of $+5\%$ was \emph{above that ceiling}.
+That alone should have flagged it as an artifact, and it is part of why the measurement was redone.
+
+On the cached slice the split is consistently, if slightly, \emph{slower}: the threaded binary won only \SliceWins{} interleaved pairs.
+This fits the cost model. Decoding is about 4\,ns of a roughly 250\,ns per-message budget, so moving it to another core
+frees almost nothing on the consumer. Meanwhile every command now crosses cores: the producer writes a 40-byte slot into its
+own cache, and the consumer has to pull that line over. Both cores also spin when the queue is empty or full.
+The threaded runs do vary less (sd \SliceTsd{} vs.\ \SliceSsd), so the split mainly narrows the spread rather than raising throughput.
+
+On the full day, which does not fit in memory, the order flips: threaded leads by \FullDelta{} on medians and wins \FullWins{} pairs.
+A plausible explanation is that the producer takes the page-fault and disk stalls while the consumer keeps applying commands,
+so the split overlaps I/O with work, and that overlap is something a single thread cannot get.
+With nine noisy pairs this is a hypothesis, not a result. Testing it properly would need cold-cache runs with the page cache dropped
+and pinned cores.
+
+Either way the gap is a few percent, and the main point stands: \code{apply\_command} is the bottleneck however many threads there are.
+Putting a second thread \emph{in front of} the single consumer cannot change that. Sharding the books across several consumers can.}

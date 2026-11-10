@@ -2,7 +2,9 @@
 
 A NASDAQ TotalView-ITCH 5.0 feed handler and L3 order book reconstruction engine, in C++23.
 
-Written to find out how fast this can actually go on one core, and to have something concrete to point at when people ask what I've built. No runtime dependencies: Catch2 and Google Benchmark are test-only.
+Written to find out how fast this can actually go on one core, and to have something concrete to point at when people ask what I've built. No runtime dependencies. The unit tests are plain-assert executables (Catch2 and Google Benchmark are vendored in `third_party/` but not wired up yet).
+
+A write-up of the architecture, the measurements and the design decisions they drove is in [`paper/itch-engine.pdf`](paper/itch-engine.pdf). Raw benchmark logs are in [`results/`](results/).
 
 ## Layout of one message
 ||||
@@ -73,7 +75,7 @@ That's 64.9M messages replayed into live state with zero missing refs and no cro
 
 ## Status
 
-Current: **M3**, parser and book split across a lock-free single-producer/single-consumer queue, validated identical to the single-threaded path over all symbols.
+Current: **M3**, parser and book split across a lock-free single-producer/single-consumer queue, validated identical to the single-threaded path over all symbols. Measured properly, the split is slightly slower on cached data (see *M3 timing* below), which is itself the result: the book, not the parser, is the bottleneck.
 
 How it got here:
 
@@ -122,15 +124,20 @@ Measured on an AMD Ryzen 7 4700U, 7 GB RAM, under WSL2 (kernel 6.18.33.2-microso
 
 **M3 timing, revisited.** Initially deferred: WSL has no core pinning, so a threaded-vs-single number risked measuring the scheduler, not the design. 
 
-Measured anyway: Windows power plan set to Ultimate Performance (removes frequency downclocking), Teams/OneDrive/browser closed (removes background contention for the second core), 10 runs each variant, high and low trimmed, remaining 8 averaged, same box, same file.
+Measured anyway, twice. The first attempt (10 runs each, trimmed mean) reported threaded ~5% faster, 3.97 vs 3.78 M msg/s. **That result is withdrawn**: a later check of the method found the two binaries weren't timed the same way and had been built from uncommitted code.
 
-|variant|	M msg/s|
-|---|---|
-|single-threaded (BOOK_MODE=1)|	3.78|
-|producer/consumer split (M3)|	3.97|
+Remeasured on a clean clone of `5f9ee3c` (`results/bench_m3.sh`): both binaries timed by their own `steady_clock` around the work loop only, single and threaded runs **interleaved** so drift hits both equally, page cache warmed before every run. Ultimate Performance power plan, AC power, browser and sync clients closed.
 
+| input | pairs | single (median) | threaded (median) | threaded wins |
+|---|---|---|---|---|
+| 2 GB slice, fits in page cache | 25 | 4.67 M msg/s (sd 0.29) | 4.52 M msg/s (sd 0.17) | 5 / 25 |
+| full day, 11 GB, larger than WSL's 7 GB | 9 | 4.08 M msg/s (sd 0.27) | 4.35 M msg/s (sd 0.32) | 6 / 9 |
 
-~5% faster. Consistent with the cost ratio above (decode ~4 ns/msg, apply_command ~255 ns/msg, 64:1) decode isn't the bottleneck, so there was never much to hide behind a second core. It's also fragile: the same comparison under a default power plan with background load running came out slower threaded, not faster, because the two-thread design needs two clean cores at once and single-threaded only ever needs one. This is noise control, not core pinning — no taskset, no thread affinity, so a scheduler-proof measurement is still open. And the ceiling stays hard either way: apply_command is the bottleneck regardless of threading, so the next real gain is sharding apply across multiple consumer threads by stock_locate, not tuning this pipeline further.
+**When the data is in memory, the split is ~3% slower.** That's consistent with the cost ratio above (decode ~4 ns/msg, apply_command ~255 ns/msg, 64:1). Moving decode off the consumer saves almost nothing, and every message now pays a cross-core handoff of a 40-byte Command, plus the cost of two cores spinning.
+
+**On the uncached full day it's ahead**, plausibly because the producer takes the page-fault and disk stalls while the consumer keeps applying, so I/O overlaps with work. That's a hypothesis, not a finding: 9 pairs with this much noise can't settle it, and the full-day runs are partly disk-bound by construction.
+
+Neither result uses core pinning (no taskset, no thread affinity), so this is reduced noise, not a scheduler-proof measurement. The ceiling stays hard either way: apply_command is the bottleneck however many threads there are, so the next real gain is sharding apply across consumer threads by stock_locate, not tuning this pipeline.
 
 ## What the counters say
 
@@ -144,6 +151,8 @@ Wall clock on this box has a roughly 25% run-to-run spread, so it cannot resolve
 | fibonacci, W=4096 | 15.29 | 0.66 | 10.14 |
 | fibonacci, W=1024 | 15.05 | 0.66 | 10.12 |
 | fibonacci, W=512 | 15.04 | 0.65 | 9.97 |
+
+**Rerun on `5f9ee3c`** (Nov 2026, fresh builds, user+kernel, `results/counters_clean.txt`): same conclusions. unordered_map → table: 20.93 → 15.27 G instructions (−27%), 1.04 → 0.63 G misses (−39%). Identity vs fibonacci: 15.93 vs 15.27 G instructions, 0.64 vs 0.63 G misses. Ladder width 8192/4096/1024/512: miss/msg 9.71 / 9.24 / 10.21 / 9.51, no trend, identical 15.27 G instructions. One correction to "the counters are deterministic": instruction counts are, but cache misses vary by about ±5% between near-identical builds, so miss differences under ~10% can't be resolved here.
 
 Two results there, and one of them is a null.
 
@@ -210,6 +219,7 @@ MAP_PRIVATE not SHARED: the mapping is PROT_READ-only and never mutated, so copy
 * **One routing decision for prices.** `to_slot()` decides whether a price lives in the ladder or in the overflow map, and both the add path and the find path call it. If those two ever disagreed, the accounting would break silently.
 * **SPSC queue, no locks.** Single producer, single consumer, so no compare-and-swap: each thread does a relaxed load of its own index, an acquire load of the other's, and a release store after touching the slot. head and tail sit on separate cache lines (`alignas(64)`) so the two cores don't ping-pong one line between them. Indices are monotonic and masked only on access, so head-tail==CAP means full and head==tail means empty with no wasted slot.
 * **Command is a flat POD.** One fixed-size struct per book operation, trivially copyable so it memcpys into the ring. It carries everything a book call needs by value and points back into nothing, because by the time the consumer reads it the parser has moved far ahead in the file.
+* **50% load factor before growing, not 70-90%.** `insert()` doubles capacity when occupancy would cross half. At 50%, expected probes are ~1.5 for a hit, ~2.5 for a miss (uniform hashing, open addressing); both climb non-linearly toward 80%. Hits dominate here, so the win isn't the average case, it's bounding tail probe length right before a `grow()`. Costs ~6 MB extra at 200k orders versus an 80% table; trivial next to L3.
 
 ### Decode safety: copy-then-decode
 
@@ -262,6 +272,25 @@ diff single.txt threaded.txt && echo IDENTICAL
 ```
 Requires GCC 13+ or Clang 17+ (needs `std::byteswap`), CMake >= 3.25. Linux only, `mmap` is POSIX.
 
+### Tests
+
+Plain-assert executables, not registered with CTest yet (there's no `tests/CMakeLists.txt`). Build them standalone with asserts on:
+
+```bash
+g++-13 -std=c++23 -O2 -Isrc tests/test_spsc.cpp        -o test_spsc        && ./test_spsc
+g++-13 -std=c++23 -O2 -Isrc tests/test_decode_side.cpp -o test_decode_side && ./test_decode_side
+```
+
+`test_spsc`: fill to capacity, refuse when full, FIFO order, wrap-around. `test_decode_side`: valid sides accepted, malformed sides rejected on `'A'`/`'F'`. Both pass on `5f9ee3c` (`results/tests.txt`).
+
+### Benchmark scripts
+
+* `results/bench_counters.sh`: the perf counter matrix (same as `bench.sh`, no `sudo`; needs `kernel.perf_event_paranoid<=0` to count kernel events too).
+* `results/bench_m3.sh <file> <pairs> <out>`: single vs threaded, both timed by their internal clock, runs interleaved, page cache warmed before each run.
+* `results/make_slice.cpp`: recreates the 64,858,229-message slice (first 2 GB of the day, cut at a message boundary).
+
+`bench2.sh` is kept for history but its comparison is flawed: it times single-threaded with the internal clock and threaded with process wall time. Use `bench_m3.sh`.
+
 Sample data: `emi.nasdaq.com`. Not in the repo, it's 11 GB.
 
 ## Roadmap
@@ -274,7 +303,7 @@ Sample data: `emi.nasdaq.com`. Not in the repo, it's 11 GB.
 - [X] **M3**, lock-free SPSC queue, parser and book on separate threads
 - [ ] **M4**, MoldUDP64 transport, gap detection, recovery
 - [ ] latency histograms (rdtsc), not just throughput
-- [x] M3 throughput under a controlled environment (max-performance power plan, no background load): 3.97 vs 3.78 M msg/s, ~5%: small, consistent with the decode:apply cost ratio
+- [x] M3 throughput under a controlled environment, same-clock interleaved runs: threaded ~3% *slower* on cached data (4.52 vs 4.67 M msg/s), ahead on the uncached full day (4.35 vs 4.08, noisy). Supersedes an earlier, flawed +5% figure
 - [ ] true pinned-core measurement (taskset/thread affinity), to rule out scheduler noise rather than just reduce it
 - [ ] shard apply_command across multiple consumer threads by stock_locate; the actual next throughput lever, since apply is the bottleneck regardless of thread count
 
