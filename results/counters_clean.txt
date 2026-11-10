@@ -1,0 +1,9 @@
+# start 2026-11-10T23:56:40+01:00 paranoid=0 commit=5f9ee3c
+VARIANT                  M msg/s    instr(G)     miss(G)     refs(G)   miss/msg
+map,        W=8192           2.4       20.93        1.04        2.37      15.99
+table-id,   W=8192           4.3       15.93        0.64        1.64       9.83
+table-fib,  W=8192           4.9       15.27        0.63        1.53       9.71
+table-fib,  W=4096           5.2       15.28        0.60        1.46       9.24
+table-fib,  W=1024           4.1       15.27        0.66        1.57      10.21
+table-fib,  W=512            5.1       15.27        0.62        1.49       9.51
+# end 2026-11-10T23:59:11+01:00
