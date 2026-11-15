@@ -7,13 +7,13 @@
 Uncached full day: \FullDelta, noisy. Small effect, sign depends on I/O. Confirmed.}
 
 \newcommand{\CountersComment}{%
-The rerun matches the original within a few percent, on code that has changed since (M3, side validation), and every conclusion holds.
-The open-addressed table cuts instructions by 27\% and misses by 39\% compared with \code{unordered\_map}.
-Fibonacci hashing uses 4\% fewer instructions than identity hashing, with the same misses.
-Ladder width shows no trend: miss/msg goes 9.71, 9.24, 10.21, 9.51 from $W{=}8192$ down to $W{=}512$, and the instruction count is identical (15.27\,G) for all four.
-Rerunning also qualifies one claim from the original write-up, that the counters are deterministic. \emph{Instructions} are, to four significant figures.
-\emph{Cache misses} vary by about $\pm5\%$ between builds that differ only in an unused allocation size, so miss differences below about 10\% cannot be resolved here.
-The table's 39\% is well above that; the ladder-width and hash differences are not.}
+Four results, ranked by how clearly they clear the noise.
+\textbf{The open-addressed table} cuts instructions by \PctTableInstr{} and misses per message by \PctTableMiss{} compared with \code{unordered\_map}, with \TableSpeedup$\times$ the throughput; the ranges are far apart.
+\textbf{Ladder width matters}: every halving from $W{=}8192$ to $W{=}512$ adds instructions and misses (\CfibP, \CfibfP, \CfiboP, \CfibhP{} miss/msg), and even the noisy clock separates the ends.
+\textbf{The global table} runs \PctGlobalInstr{} fewer instructions than the per-book one but has \PctGlobalMiss{} more misses per message, in every round, and even its best run misses more than the per-book table's worst.
+With identity hashing it runs \GidInstrX$\times$ the instructions.
+\textbf{Hash choice in per-book tables} is a small effect: Fibonacci runs \PctHashInstr{} fewer instructions and \PctHashMiss{} fewer misses. The miss ranges touch, but identity missed more in \CidPair{} rounds.
+Instruction counts were identical across all \CountersReps{} runs of each variant.}
 
 \newcommand{\MthreeComment}{%
 \textbf{An upper bound before any measurement.} On cached data, the most the split can gain is the decode share of the per-message cost:

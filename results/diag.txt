@@ -1,0 +1,9 @@
+# start 2026-11-15T12:34:17+01:00 commit=2d8d929 flags=-DPROBE_STATS
+diag id8192 overflow=4026800 calls=105895977 slots=258710987 avg=2.443 max=1892
+diag fib8192 overflow=4026800 calls=105895977 slots=166268341 avg=1.570 max=38
+diag fib4096 overflow=8670263 calls=105895977 slots=166268341 avg=1.570 max=38
+diag fib1024 overflow=17287939 calls=105895977 slots=166268341 avg=1.570 max=38
+diag fib512 overflow=20388517 calls=105895977 slots=166268341 avg=1.570 max=38
+diag gid8192 overflow=4026800 calls=68413186 slots=48382223109 avg=707.206 max=105698
+diag gfib8192 overflow=4026800 calls=68413186 slots=116276063 avg=1.700 max=34
+# end 2026-11-15T12:37:30+01:00

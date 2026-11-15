@@ -45,9 +45,11 @@ and rebuilds a full-depth (L3) limit order book for every instrument. It is writ
 The project was built in milestones, and every optimisation was measured before it was kept.
 On a 2\,GB slice (64{,}858{,}229 messages) the framing walk alone runs at 258\,M\,msg/s;
 adding the book drops this by two orders of magnitude, to about 4\,M\,msg/s. Most of the paper is about that gap.
-Hardware performance counters showed that an open-addressed order table cuts instructions by 29\% and
-cache misses by 40\% compared with \code{std::unordered\_map}. A 16$\times$ smaller price ladder changes nothing,
-and the choice of hash function makes no measurable difference.
+Hardware performance counters, taken as the median of \CountersReps{} interleaved runs, show that an open-addressed order table cuts instructions by \PctTableInstr{} and
+cache misses per message by \PctTableMiss{} compared with \code{std::unordered\_map}.
+Shrinking the price ladder 16$\times$ \emph{raises} misses by \PctWidthMiss, because more orders fall outside it into a tree.
+A single global order table with direct level pointers, the layout several published ITCH books use, runs fewer instructions
+but misses more, and was not kept. With identity hashing it is catastrophic: \GidInstrX$\times$ the instructions, from probe clustering on near-sequential order references.
 Splitting parsing and book updates across a lock-free single-producer/single-consumer queue
 \MthreeVerdictShort, as expected when book updates cost about 64 times more than decoding.
 Correctness rests on five independent checks, including a differential test against a deliberately naive reference
@@ -124,6 +126,7 @@ The engine grew in layers. Each layer was measured on its own, so the cost of ea
         Slow by design: this is the oracle.
   \item[M2b, price ladder] Price levels in a flat array indexed by price, with an overflow map for out-of-window and sub-penny prices.
   \item[M2c, order table] Open addressing with linear probing and backward-shift deletion instead of \code{unordered\_map}.
+  \item[M2d, global order table (measured, not kept)] One table for the whole feed, keyed by order reference, with each order pointing straight at its price level.
   \item[M3, thread split] A producer thread parses and decodes into fixed-size \code{Command}s; a consumer thread
         applies them. The only shared object is a lock-free SPSC ring.
 \end{description}
@@ -200,7 +203,7 @@ It must never point back into the mapping, because by the time the consumer read
 A tagged union would be denser: an erase uses 11 of the 40 bytes. It was not built, because no measurement has shown the ring's packing density to be a bottleneck.
 
 \subsection{The price ladder (\code{LadderBook})}
-Price levels live in two flat arrays of \code{Level\{total\_shares, order\_count\}}, indexed by
+Price levels live in two flat arrays of \code{Level\char123 total\_shares, order\_count\char125}, indexed by
 $(\textit{price}-\textit{base})/\textit{tick}$. Each array is a window of \code{WIDTH} one-cent ticks, allocated lazily
 and centred on the first price an instrument trades at. Prices outside the window, or below a cent, go to a \code{std::map} overflow.
 A single function decides where a price lives:
@@ -217,6 +220,9 @@ Add, find and erase all call it. If the add path and the find path ever disagree
 removed from another, and the totals would drift with no error raised. Best bid and ask are found from a memoised hint that only moves
 toward the touch on add and is re-scanned lazily when the top level empties.
 
+\code{WIDTH} defaults to 8192 ticks (81.92\,USD). That was chosen to keep orders out of the overflow map, not to fit in cache, and Section~\ref{sec:decisions} shows that it matters:
+even at 8192, \DfibOv\,M adds land in the overflow map; at 512 it is \DfibhOv\,M.
+
 \subsection{The order table}
 Order lookup by reference (every execute, cancel, delete and replace) uses an open-addressed table of 24-byte
 \code{Slot}s with linear probing, ref~0 as the empty marker, and a capacity that is a power of two.
@@ -230,6 +236,15 @@ Order lookup by reference (every execute, cancel, delete and replace) uses an op
   \item \textbf{Hash:} identity (\code{ref \& mask}) or Fibonacci (\code{(ref * 0x9E3779B97F4A7C15) >> (64-k)}), chosen at compile time
         (Section~\ref{sec:decisions}).
 \end{itemize}
+
+\subsection{A global order table (M2d)}
+In the per-instrument design, every execute, cancel or delete first indexes the \code{books} vector by \code{stock\_locate}, then probes that book's table.
+ITCH order references are unique for the whole day, so a single table keyed by reference alone is possible.
+Each 32-byte \code{GlobalSlot} then holds a \code{Level*} straight to the order's price level, and removing shares touches the slot and the level, never the book object.
+This is the shape of two published designs: Selph's limit order book keeps all orders in one map by id, each with a pointer to its parent level~\cite{selph},
+and Cooper's ITCH book stores a book index and level index in each order record~\cite{cooper}.
+The pointer is stable because ladder arrays are allocated once, before any order rests in them, and \code{std::map} nodes do not move until erased.
+The table reuses the same open-addressing code (\code{OpenTable<S>} is generic over the slot type), so the comparison changes the layout, not the probing.
 
 \subsection{The lock-free SPSC queue}
 \begin{lstlisting}
@@ -268,10 +283,22 @@ SHA-256 \code{8df6de53\ldots e3ddc}). The slice fits in the page cache; the full
 tree under WSL can silently skip recompiles when the two clocks disagree. A stale binary once produced a confident and completely
 wrong ``the hash table bought nothing'' result.
 
-\paragraph{Counters over the clock.} Wall-clock time on this machine varies by about 25\% from run to run, which is too much to resolve a 20\% change.
-Data-structure decisions were therefore ranked on hardware counters (\code{perf stat}: instructions, cache references, cache misses,
-counted for user and kernel). Instruction counts are exact to four significant figures. Cache-miss counts vary by about $\pm5\%$ (Section~6.2),
-so they can separate large effects but not small ones.
+\paragraph{Build verification.} Every binary prints the configuration it was compiled with (\code{TABLE\_MODE}, \code{HASH\_MODE}, \code{LADDER\_WIDTH}),
+and the benchmark script refuses to record a run whose printed configuration differs from the flags it passed.
+A compile flag that nothing reads therefore stops the run instead of producing a fake variant.
+This check was added after exactly that happened (Section~\ref{sec:caveats}).
+
+\paragraph{Counters over the clock.} Wall-clock time on this machine varies by 20--25\% from run to run, which is too much to resolve a 20\% change.
+Data-structure decisions were therefore ranked on hardware counters (\code{perf stat}: instructions, cache references, cache misses).
+They are counted in user space only (\code{:u}). That measures the engine's own code rather than the kernel's page-fault work on the mapping,
+which is the same for every variant, and it does not depend on \code{perf\_event\_paranoid}, which WSL resets on restart.
+Each variant is built once and run \CountersReps{} times, interleaved (all variants once, then all again, \ldots) so that drift spreads across variants.
+Tables report the median and the min--max range, and a \emph{paired} count: in how many rounds a variant missed more than the reference variant in the same round.
+Pairing cancels drift that moves a whole round up or down.
+Instruction counts are identical in every run. Cache-miss counts stayed within about $\pm5\%$ and throughput within about $\pm8\%$ on the quiet machine;
+an earlier run with light interactive use of the machine varied about twice as much.
+A difference is treated as real only if it holds in every round.
+The machine was not used interactively during the reported run.
 
 \paragraph{Threading comparison.} Both binaries are timed by their own internal \code{steady\_clock} around the work
 loop only, excluding process start-up, mapping, book allocation and the final dump. Single-threaded and threaded runs are
@@ -302,18 +329,20 @@ Table~\ref{tab:stages} records each milestone when it landed. The same single-th
 
 \subsection{What the counters say}
 \begin{table}[h]\centering
-\caption{\code{perf stat} on the slice, user+kernel. ``Then'' is the original run at the time of M2c;
-``now'' is a rerun on the current commit (\code{\Commit}) with fresh builds.}\label{tab:counters}
-\begin{tabular}{l rr rr rr}\toprule
- & \multicolumn{2}{c}{instr (G)} & \multicolumn{2}{c}{misses (G)} & \multicolumn{2}{c}{miss/msg}\\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
-variant & then & now & then & now & then & now\\\midrule
-\code{unordered\_map}, W=8192   & 21.42 & \CmapI & 1.08 & \CmapM & 16.73 & \CmapP \\
-open-addr., identity, W=8192  & 15.69 & \CidI  & 0.66 & \CidM  & 10.15 & \CidP \\
-open-addr., Fibonacci, W=8192 & 15.30 & \CfibI & 0.66 & \CfibM & 10.23 & \CfibP \\
-Fibonacci, W=4096             & 15.29 & \CfibfI & 0.66 & \CfibfM & 10.14 & \CfibfP \\
-Fibonacci, W=1024             & 15.05 & \CfiboI & 0.66 & \CfiboM & 10.12 & \CfiboP \\
-Fibonacci, W=512              & 15.04 & \CfibhI & 0.65 & \CfibhM & 9.97  & \CfibhP \\\bottomrule
+\caption{\code{perf stat} on the slice, user space only, commit \code{\CountersCommit}. Median of \CountersReps{} interleaved runs per variant, min--max in brackets.
+Instruction counts were identical in every run. ``Paired'': rounds in which the variant missed more than per-book Fibonacci $W{=}8192$ (bold) in the same round.
+Probes per lookup come from a separate, untimed build of the same commit with probe counting compiled in.}\label{tab:counters}
+\small
+\begin{tabular}{l r r@{\,}l c r@{\,}l r}\toprule
+variant & instr (G) & \multicolumn{2}{c}{miss/msg} & paired & \multicolumn{2}{c}{M\,msg/s} & probes \\\midrule
+\code{unordered\_map}, W=8192        & \CmapI  & \CmapP  & {\footnotesize(\CmapPlo--\CmapPhi)}   & \CmapPair  & \CmapR  & {\footnotesize(\CmapRlo--\CmapRhi)}   & -- \\
+per-book, identity, W=8192          & \CidI   & \CidP   & {\footnotesize(\CidPlo--\CidPhi)}     & \CidPair   & \CidR   & {\footnotesize(\CidRlo--\CidRhi)}     & \DidAvg \\
+\textbf{per-book, Fibonacci, W=8192} & \CfibI  & \CfibP  & {\footnotesize(\CfibPlo--\CfibPhi)}   & --         & \CfibR  & {\footnotesize(\CfibRlo--\CfibRhi)}   & \DfibAvg \\
+per-book, Fibonacci, W=4096         & \CfibfI & \CfibfP & {\footnotesize(\CfibfPlo--\CfibfPhi)} & \CfibfPair & \CfibfR & {\footnotesize(\CfibfRlo--\CfibfRhi)} & \DfibfAvg \\
+per-book, Fibonacci, W=1024         & \CfiboI & \CfiboP & {\footnotesize(\CfiboPlo--\CfiboPhi)} & \CfiboPair & \CfiboR & {\footnotesize(\CfiboRlo--\CfiboRhi)} & \DfiboAvg \\
+per-book, Fibonacci, W=512          & \CfibhI & \CfibhP & {\footnotesize(\CfibhPlo--\CfibhPhi)} & \CfibhPair & \CfibhR & {\footnotesize(\CfibhRlo--\CfibhRhi)} & \DfibhAvg \\\addlinespace
+global, identity, W=8192            & \CgidI  & \CgidP  & {\footnotesize(\CgidPlo--\CgidPhi)}   & \CgidPair  & \CgidR  & {\footnotesize(\CgidRlo--\CgidRhi)}   & \DgidAvg \\
+global, Fibonacci, W=8192           & \CgfibI & \CgfibP & {\footnotesize(\CgfibPlo--\CgfibPhi)} & \CgfibPair & \CgfibR & {\footnotesize(\CgfibRlo--\CgfibRhi)} & \DgfibAvg \\\bottomrule
 \end{tabular}
 \end{table}
 \CountersComment
@@ -341,16 +370,25 @@ Each row below is a prediction made \emph{before} measuring, the measurement, an
 question & prediction & measurement & decision \\\midrule
 Open addressing vs.\ \code{unordered\_map} &
 Fewer misses: no bucket array, no pointer chase to a heap node. &
-27--29\% fewer instructions, 39--40\% fewer misses (16.0--16.7 $\to$ 9.7--10.2 miss/msg), in both the original run and the rerun. Confirmed. &
+\PctTableInstr{} fewer instructions, \PctTableMiss{} fewer misses per message (\CmapP{} $\to$ \CfibP), \TableSpeedup$\times$ the throughput. Confirmed. &
 Kept; backward-shift deletion because 41\% of messages are deletes. \\\addlinespace
 Ladder width (8192 $\to$ 512) &
 Large win once the ladder fits in cache. &
-miss/msg 10.23 $\to$ 9.97 for a 16$\times$ shrink; the rerun shows no trend (9.2--10.2) and identical instruction counts. \textbf{Prediction wrong.} &
-Width sized for overflow avoidance, not cache. The working set, not the allocation, matters. \\\addlinespace
+The opposite: misses per message \emph{rise} \PctWidthMiss{} (\CfibP{} $\to$ \CfibhP) and instructions \PctWidthInstr, monotonically with each halving.
+Overflow adds go from \DfibOv\,M to \DfibhOv\,M. \textbf{Prediction wrong.} &
+Keep 8192, sized for overflow avoidance. A wider or re-centring window is the next thing to test. \\\addlinespace
 Identity vs.\ Fibonacci hash &
 Identity wins on locality: NASDAQ refs are nearly sequential. &
-Same misses; Fibonacci 2.5--4\% fewer instructions. \textbf{Prediction wrong}, for a reason that became clear afterwards. &
-Fibonacci, recorded as no measurable difference rather than a finding. \\\addlinespace
+Per-book tables: Fibonacci \PctHashInstr{} fewer instructions, \PctHashMiss{} fewer misses, fewer in \CidPair{} rounds. Small but consistent. In one global table, identity is catastrophic (\GidInstrX$\times$ the instructions). &
+Fibonacci. Its value is robustness, not speed. \\\addlinespace
+One global table with level pointers (M2d) &
+Fewer misses: execute, cancel and delete skip the book object and probe once. &
+\PctFewerLookups{} fewer table lookups and \PctGlobalInstr{} fewer instructions, but \PctGlobalMiss{} \emph{more} misses per message (\CfibP{} $\to$ \CgfibP), in \CgfibPair{} rounds with no overlap in range; throughput no better. \textbf{Prediction wrong.} &
+Not kept. Per-book tables stay the default; mode~2 stays in the code as the measured alternative. \\\addlinespace
+Trusting a compile flag &
+\code{-DLADDER\_WIDTH=512} builds a 512-wide ladder. &
+The header hard-coded 8192 and ignored the flag. The original width sweep compared four identical binaries. &
+Binaries print their configuration; the script refuses mismatches. \\\addlinespace
 Threading the pipeline &
 Small gain at best: decoding is about 4\,ns and applying about 255\,ns per message (64:1), so the gain is at most about $+1.5\%$. &
 \MthreeDecisionCell &
@@ -362,16 +400,32 @@ Validate at each entry point; regression test added. \\\bottomrule
 \end{tabularx}
 \end{table}
 
-\paragraph{Why ladder width does nothing.} The best-price hint means that only a few slots near the touch are ever read.
-A 512-slot array and an 8192-slot array have the same \emph{working set}, so allocating less buys nothing.
+\paragraph{Why a narrower ladder costs more.} The prediction looked only at the array: the best-price hint means that only a few slots near the touch are read,
+so a smaller array was expected to stay hot in cache. That part is true, but it ignores where the excluded prices go.
+Every price outside the window is stored in a \code{std::map}, and each add, execute or cancel there is a tree walk through heap nodes instead of one array index.
+Shrinking the window from 8192 to 512 ticks multiplies the overflow traffic by \OvWidthX$\times$, and that costs far more than a larger array saves.
 
-\paragraph{Why identity hashing did not win on locality.} References are close to sequential \emph{globally}, but they
-are spread across thousands of per-instrument tables. Two consecutive references almost never land in the same table, so the
-locality identity hashing was supposed to exploit is not there.
+\paragraph{Why identity hashing costs little per book, and breaks a global table.} Identity hashing maps near-sequential references to neighbouring slots.
+With linear probing, those runs merge into long occupied blocks (primary clustering), and any lookup that lands in one has to walk to its end.
+In the per-instrument design each table sees only a scattered subset of references, so the effect is mild:
+\DidAvg{} slots per lookup against \DfibAvg{} for Fibonacci, with occasional runs up to \DidMax{} slots.
+The tables are small and stay in cache, so the extra probing costs only \PctHashInstr{} in instructions.
+A single global table sees every reference in the feed, and the blocks grow without limit.
+The probe counter measures \DgidAvg{} slots per lookup on average, with a longest probe of \DgidMax, against \DgfibAvg{} for the global Fibonacci table.
+That accounts for the \GidInstrX$\times$ instruction count.
 
-\paragraph{Where the remaining misses come from.} About 10 cache misses per message remain. The leading suspect is the
+\paragraph{Why the global table misses more.} Mode~2 works as designed: it skips the book object on deletes, executions and cancels (about half of all messages),
+and because each order is found once and then erased in place, it makes \LookupsGlobal\,M table lookups instead of \LookupsPerBook\,M.
+It runs fewer instructions.
+But one table holding every live order in the feed is much larger than any per-instrument table, and its slots are 32 bytes instead of 24.
+Consecutive messages usually belong to different instruments, so they hit unrelated parts of a large table that does not stay in cache,
+whereas a busy instrument's small table stays hot. The extra misses outweigh the saved book-object access.
+This explanation is consistent with the counters but has not been isolated by a separate measurement.
+
+\paragraph{Where the remaining misses come from.} \CfibP{} cache misses per message remain (median). The leading suspect is the
 \code{books} vector itself: 65{,}536 \code{LadderBook} objects indexed by an effectively random 16-bit locate on every message.
-That is a near-certain cold miss on the book object before any work starts. This has not been tested yet.
+That is a near-certain cold miss on the book object before any work starts. Mode~2 does not settle this: it skips the book object
+on about half of all messages but also changes the table's size, so the two effects cannot be separated.
 
 %=====================================================================
 \section{How we know it is right}
@@ -386,8 +440,10 @@ That is a near-certain cold miss on the book object before any work starts. This
         The 0.9\% residual is orders resting when the slice ends, plus partial fills. Nothing in the code enforces this identity.
   \item \textbf{Two independent books agree.} The naive oracle and the fast book run side by side and are compared on
         best bid and best ask for every instrument: 0 mismatches, 0 missing refs, no crossed books.
-  \item \textbf{Threaded equals single-threaded.} Both dump the top of book for about 8{,}000 active instruments at the end.
-        The files are byte-for-byte identical, so the queue neither dropped nor reordered a message.
+        The global-table variant (M2d) passes the same check with assertions on, plus an assertion on every message that the message's instrument matches the stored order's.
+  \item \textbf{Threaded equals single-threaded, and every table layout agrees.} Both binaries dump the top of book for the 8{,}694 active instruments at the end.
+        The files are byte-for-byte identical, so the queue neither dropped nor reordered a message. They are also identical across
+        \code{unordered\_map}, per-book and global tables.
 \end{enumerate}
 
 \paragraph{The limit of differential testing.} A diff catches disagreement, not a bug both sides share. Both books chose a side with
@@ -397,7 +453,7 @@ The fix validates \code{side} at each book's own entry point (\code{itch::is\_va
 
 \paragraph{Unit tests.} \code{test\_spsc} (fill to capacity, refuse when full, FIFO order, wrap-around) and
 \code{test\_decode\_side} (valid sides accepted, malformed sides rejected on \code{'A'} and \code{'F'}) both pass on
-commit \code{\Commit}, built with assertions enabled.
+commits \code{\Commit} and \code{\CountersCommit}, built with assertions enabled.
 
 %=====================================================================
 \section{Caveats and threats to validity}
@@ -418,7 +474,16 @@ commit \code{\Commit}, built with assertions enabled.
         internal clock and the threaded one with process wall time, used the full uncached file, and ran binaries built from uncommitted code;
         it showed no difference. Both are withdrawn and replaced by the method in Section~\ref{sec:method}.
         When a careful remeasurement reverses the sign of an earlier result, that is worth reporting.
+
+        A previous version of this paper also concluded that ladder width makes no difference.
+        The compile flag that sets the width was never read: the header hard-coded 8192, so the sweep compared four identical binaries, and their spread was run-to-run noise.
+        A commit message described the guard that would have made the flag work, but the guard was never in the code.
+        The width results here come from binaries that were checked to print the width they were asked for (Section~\ref{sec:method}).
+        That version's counters were also counted for user and kernel; all counter results here are user space only and are not directly comparable with it.
   \item \textbf{Full-day sample.} The first full-day pair was dropped because a package install overlapped it, leaving 9 pairs.
+  \item \textbf{Two commits.} The threading measurements (Table~\ref{tab:m3}) ran on \code{\Commit}, the counter matrix on \code{\CountersCommit}.
+        The per-book path does the same work in both: the later commit makes the table a template shared with the global variant, adds that variant and probe counting behind compile flags, and prints the configuration.
+        The probe and overflow counts come from separate, untimed builds of \code{\CountersCommit} with probe counting compiled in.
   \item \textbf{One trading day.} Every number comes from 30~January~2019. The message mix, and so the delete ratio, varies by day.
   \item \textbf{Throughput only.} There are no latency percentiles; a throughput figure says nothing about the tail.
   \item \textbf{Test harness.} The unit tests are plain-assert executables built directly, not yet registered with CTest.
@@ -432,21 +497,31 @@ commit \code{\Commit}, built with assertions enabled.
   \item \textbf{Shard \code{apply} across consumers by \code{stock\_locate}.} Book updates are the bottleneck however many threads there are,
         and different instruments' books are independent.
   \item \textbf{Attack the book-object miss}: a compact locate-to-dense-index remap, or keeping hot book headers together.
+  \item \textbf{A wider or re-centring ladder.} Misses fall with every doubling of the width up to 8192; whether 16{,}384 or a window that re-centres on the touch removes the remaining \DfibOv\,M overflow adds is untested.
   \item \textbf{Latency histograms} via \code{rdtsc}, per message type.
   \item \textbf{Pinned-core measurement} on bare-metal Linux.
   \item \textbf{M4: MoldUDP64} transport, gap detection and recovery.
   \item A denser, tagged-union \code{Command} if ring density ever shows up in a profile.
 \end{itemize}
 
+\begin{thebibliography}{9}
+\bibitem{selph} W.~K.~Selph, ``How to Build a Fast Limit Order Book,'' 2011. \url{https://gist.github.com/halfelf/db1ae032dc34278968f8bf31ee999a25}
+\bibitem{cooper} C.~Cooper, write-up of the \code{itch-order-book} project, \emph{Parallel Programmer} (Substack). \url{https://parallelprogrammer.substack.com/p/fun-new-project-itch-order-simd}
+\end{thebibliography}
+
 \appendix
 \section{Reproducing}
 \begin{lstlisting}[language=bash]
-git clone <repo> && cd itch-engine && git checkout 5f9ee3c
+git clone <repo> && cd itch-engine
 # slice: first 64,858,229 messages of the day (see results/make_slice.cpp)
-./results/bench_counters.sh                         # perf matrix, fresh builds
+git checkout 5f9ee3c
 ./results/bench_m3.sh ~/data/itch_2gb.bin 25 m3_slice.txt
+git checkout 2d8d929
+REPS=5 ./results/bench_counters.sh                  # perf matrix, fresh builds, config-checked
+./results/bench_diag.sh                             # overflow and probe counts, untimed
 g++-13 -std=c++23 -O2 -Isrc tests/test_spsc.cpp -o t && ./t
 \end{lstlisting}
-Raw run logs are in \code{results/}: \code{tests.txt}, \code{counters.txt}, \code{m3\_slice.txt}, \code{m3\_full.txt}, \code{env.txt}.
+Raw run logs are in \code{results/}: \code{counters\_reps5.txt}, \code{diag.txt}, \code{m3\_slice.txt}, \code{m3\_full.txt}, \code{tests.txt}, \code{env.txt}.
+The superseded user+kernel matrix is kept as \code{counters.txt}.
 
 \end{document}

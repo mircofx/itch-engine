@@ -141,26 +141,32 @@ Neither result uses core pinning (no taskset, no thread affinity), so this is re
 
 ## What the counters say
 
-Wall clock on this box has a roughly 25% run-to-run spread, so it cannot resolve a 20% change. perf counters are deterministic, so those are what I rank on.
+Wall clock on this box has a 20–25% run-to-run spread when anything else is going on, so it can't resolve a 20% change. I rank on perf counters instead.
 
-| variant | instr (G) | miss (G) | miss/msg |
-|---|---|---|---|
-| unordered_map, W=8192 | 21.42 | 1.08 | 16.73 |
-| open-addressed, identity hash | 15.69 | 0.66 | 10.15 |
-| open-addressed, fibonacci hash | 15.30 | 0.66 | 10.23 |
-| fibonacci, W=4096 | 15.29 | 0.66 | 10.14 |
-| fibonacci, W=1024 | 15.05 | 0.66 | 10.12 |
-| fibonacci, W=512 | 15.04 | 0.65 | 9.97 |
+`perf stat` on the 2 GB slice, user space only (`:u`), commit `2d8d929` (`results/counters_reps5.txt`). Each variant is built once and run 5 times, interleaved (every variant once, then every variant again), so drift spreads across all of them. Median, with min–max in brackets. "Paired" is how many of the 5 rounds the variant missed more than the per-book fibonacci W=8192 table in the same round, which cancels drift that moves a whole round. Probes per lookup come from a separate untimed build with `-DPROBE_STATS` (`results/diag.txt`).
 
-**Rerun on `5f9ee3c`** (Nov 2026, fresh builds, user+kernel, `results/counters_clean.txt`): same conclusions. unordered_map → table: 20.93 → 15.27 G instructions (−27%), 1.04 → 0.63 G misses (−39%). Identity vs fibonacci: 15.93 vs 15.27 G instructions, 0.64 vs 0.63 G misses. Ladder width 8192/4096/1024/512: miss/msg 9.71 / 9.24 / 10.21 / 9.51, no trend, identical 15.27 G instructions. One correction to "the counters are deterministic": instruction counts are, but cache misses vary by about ±5% between near-identical builds, so miss differences under ~10% can't be resolved here.
+| variant | instr (G) | miss/msg | paired | M msg/s | probes/lookup |
+|---|---|---|---|---|---|
+| unordered_map, W=8192 | 18.59 | 14.61 (14.24–15.37) | 5/5 | 2.4 (2.3–2.6) | – |
+| per-book, identity, W=8192 | 13.49 | 8.82 (8.59–9.06) | 5/5 | 4.2 (4.1–4.7) | 2.44 |
+| **per-book, fibonacci, W=8192** | **12.91** | **8.34 (8.24–8.69)** | – | **4.8 (4.5–5.1)** | **1.57** |
+| per-book, fibonacci, W=4096 | 13.99 | 9.55 (9.54–9.57) | 5/5 | 4.6 (4.5–4.9) | 1.57 |
+| per-book, fibonacci, W=1024 | 16.13 | 12.79 (12.54–12.83) | 5/5 | 3.9 (3.8–3.9) | 1.57 |
+| per-book, fibonacci, W=512 | 16.87 | 13.85 (13.74–14.05) | 5/5 | 3.6 (3.4–3.7) | 1.57 |
+| global, identity, W=8192 | 554.18 | 16.88 (16.46–17.34) | 5/5 | 1.1 (1.0–1.2) | 707.21 |
+| global, fibonacci, W=8192 | 11.74 | 9.52 (9.47–9.99) | 5/5 | 4.7 (4.3–5.1) | 1.70 |
 
-Two results there, and one of them is a null.
+Instruction counts were identical in all 5 runs of every variant. With the machine left alone, misses stayed within about ±5% and throughput within about ±8%.
 
-**The order table is a real win.** 29% fewer instructions, 40% fewer cache misses. Chained maps cost a bucket-array miss plus a pointer chase to a heap node; flat slots with linear probing cost one miss, and the probe walks forward through contiguous memory, which the prefetcher handles for free. Deletion is backward-shift rather than tombstones, because 41% of messages are deletes and tombstoned slots still have to be probed through, so chains would grow without bound.
+**The order table is a real win.** 31% fewer instructions, 43% fewer misses per message, 2x the throughput. Chained maps cost a bucket-array miss plus a pointer chase to a heap node; flat slots with linear probing cost one miss, and the probe walks forward through contiguous memory, which the prefetcher handles for free. Deletion is backward-shift rather than tombstones, because 41% of messages are deletes and tombstoned slots still have to be probed through, so chains would grow without bound.
 
-**Ladder width does nothing.** 8192 slots down to 512 is a 16x shrink in allocated memory, and miss/msg moves from 10.23 to 9.97. I expected a large win from fitting the ladder into cache and was wrong. The best-price hint means only a handful of slots near the touch are ever read, so the allocated size is irrelevant. What matters is the working set, not the array.
+**Ladder width matters, in the opposite direction from what I predicted.** Going from 8192 slots to 512 raises misses by 66% and instructions by 31%, worse with every halving. I expected a smaller ladder to fit in cache and win. The array part of that is true, but every price outside the window goes to the `std::map` overflow, and the overflow adds go from 4.0M at 8192 to 20.4M at 512. A tree walk through heap nodes costs far more than a bigger array saves. 8192 stays, and a wider or re-centring window is the next thing to try, since 4M adds still overflow.
 
-**Hash choice is a wash.** Identical misses, fibonacci about 2.5% fewer instructions. Took fibonacci, but it isn't a finding. The prediction that identity would win on locality (NASDAQ refs are near-sequential) failed because refs interleave across thousands of per-symbol tables, so consecutive refs never land in the same table anyway.
+**One global order table didn't pay off.** ITCH refs are unique for the day, so mode 2 keeps every order in one table keyed by ref, with a direct `Level*` per order: execute/cancel/delete skip the book object and find the order once (68.4M lookups instead of 105.9M). Same shape as [WK Selph's order book](https://gist.github.com/halfelf/db1ae032dc34278968f8bf31ee999a25) and [charles-cooper/itch-order-book](https://parallelprogrammer.substack.com/p/fun-new-project-itch-order-simd). It runs 9% fewer instructions but has 14% more misses per message, in every round, and throughput is no better. My read: one table holding every live order is big and cold, while a busy symbol's small table stays hot. That fits the counters but I haven't isolated it. Per-book tables stay the default; mode 2 stays in the code as the measured alternative.
+
+**Hash choice: small per book, critical globally.** Per-book, fibonacci is 4% fewer instructions and 5% fewer misses, lower in all 5 rounds. Identity hashing puts near-sequential refs in neighbouring slots, and linear probing merges those into long clusters: 2.44 slots per lookup against 1.57, with runs up to 1,892. The per-book tables are small and cached, so that barely costs anything. In one global table the clusters never stop growing: 707 slots per lookup, longest probe 105,698, 43x the instructions. Fibonacci's value is robustness, not speed.
+
+**Correction.** An earlier version of this README (and the paper) said ladder width does nothing. The `-DLADDER_WIDTH` flag was never read, the header hard-coded 8192, so that sweep compared four identical binaries and the spread was noise. Every binary now prints the config it was compiled with, and `bench_counters.sh` refuses to record a run that doesn't match the flags it passed. The old numbers also counted user+kernel, so they aren't comparable with the table above; they're kept in `results/counters.txt`.
 
 ## How I know it's right
 
@@ -255,13 +261,13 @@ cmake --build build -j
 ./build/itch_engine_threaded /path/to/01302019.NASDAQ_ITCH50    # producer/consumer split
 ```
 
-Build variants are compile-time flags: `BOOK_MODE` (0 naive, 1 ladder, 2 both plus A/B validation), `TABLE_MODE` (0 unordered_map, 1 open-addressed), `HASH_MODE` (0 identity, 1 fibonacci), `LADDER_WIDTH`.
+Build variants are compile-time flags: `BOOK_MODE` (0 naive, 1 ladder, 2 both plus A/B validation), `TABLE_MODE` (0 unordered_map, 1 open-addressed per book, 2 one global open-addressed table), `HASH_MODE` (0 identity, 1 fibonacci), `LADDER_WIDTH`, and `PROBE_STATS` (diagnostics only, never in a benchmarked build). Every binary prints a `config :` line with what it was actually compiled with.
 
 ```bash
-./bench.sh
+REPS=5 ./results/bench_counters.sh
 ```
 
-builds the whole matrix and runs perf on each variant. Every variant gets a **fresh** build directory, deliberately: incremental builds on a /mnt/c source tree silently skip recompiles when the Windows and WSL clocks disagree, and a stale binary once gave me a confident and completely wrong "the hash table bought nothing" reading.
+builds the whole matrix and runs perf on each variant. Every variant gets a **fresh** build directory, deliberately: incremental builds on a /mnt/c source tree silently skip recompiles when the Windows and WSL clocks disagree, and a stale binary once gave me a confident and completely wrong "the hash table bought nothing" reading. The build directories live on WSL's own disk (`~/itch-bench-builds`), because an IDE watching the repo kept deleted /mnt/c build dirs "delete pending" and broke CMake's configure.
 
 To check the threaded path against the single-threaded one, both binaries take an optional second argument, a dump file of every active book's top of book:
 
@@ -281,11 +287,12 @@ g++-13 -std=c++23 -O2 -Isrc tests/test_spsc.cpp        -o test_spsc        && ./
 g++-13 -std=c++23 -O2 -Isrc tests/test_decode_side.cpp -o test_decode_side && ./test_decode_side
 ```
 
-`test_spsc`: fill to capacity, refuse when full, FIFO order, wrap-around. `test_decode_side`: valid sides accepted, malformed sides rejected on `'A'`/`'F'`. Both pass on `5f9ee3c` (`results/tests.txt`).
+`test_spsc`: fill to capacity, refuse when full, FIFO order, wrap-around. `test_decode_side`: valid sides accepted, malformed sides rejected on `'A'`/`'F'`. Both pass on `5f9ee3c` and `2d8d929` (`results/tests.txt`).
 
 ### Benchmark scripts
 
-* `results/bench_counters.sh`: the perf counter matrix (same as `bench.sh`, no `sudo`; needs `kernel.perf_event_paranoid<=0` to count kernel events too).
+* `results/bench_counters.sh`: the perf counter matrix. `REPS=N` builds once and interleaves N rounds, then prints medians and min–max. Events are explicitly `:u`, so results don't depend on `kernel.perf_event_paranoid` (WSL resets it to 2 on restart). Stops with `CONFIG MISMATCH` if a binary wasn't built with the flags it was asked for.
+* `results/bench_diag.sh`: overflow adds per ladder width and probes per lookup per table, from `-DPROBE_STATS` builds. Untimed, it explains the counter matrix rather than replacing it.
 * `results/bench_m3.sh <file> <pairs> <out>`: single vs threaded, both timed by their internal clock, runs interleaved, page cache warmed before each run.
 * `results/make_slice.cpp`: recreates the 64,858,229-message slice (first 2 GB of the day, cut at a message boundary).
 
@@ -307,7 +314,10 @@ Sample data: `emi.nasdaq.com`. Not in the repo, it's 11 GB.
 - [ ] true pinned-core measurement (taskset/thread affinity), to rule out scheduler noise rather than just reduce it
 - [ ] shard apply_command across multiple consumer threads by stock_locate; the actual next throughput lever, since apply is the bottleneck regardless of thread count
 
-Open: about 10 cache misses per message remain in the book path. Next suspect is the books vector itself, 65,536 LadderBook objects indexed by an effectively random u16 on every message, which is a guaranteed cold miss on the book object before any work even starts.
+- [x] global order table with direct level pointers (mode 2): measured, not kept, see "What the counters say"
+- [ ] wider or re-centring ladder window: 4M adds still overflow at W=8192
+
+Open: about 8 cache misses per message remain in the book path. Next suspect is the books vector itself, 65,536 LadderBook objects indexed by an effectively random u16 on every message, which is a guaranteed cold miss on the book object before any work even starts. Mode 2 skips the book object on about half the messages but also changes the table size, so it can't separate the two effects.
 
 ## Run
 
