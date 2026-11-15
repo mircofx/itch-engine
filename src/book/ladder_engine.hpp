@@ -62,6 +62,22 @@ public:
 		return n;
 	}
 
+#if defined(PROBE_STATS) && TABLE_MODE >= 1
+	// Summed over every open-addressed table (65,536 per-book ones in mode 1, the global one in mode 2).
+	OrderTable::ProbeStats probe_stats() const noexcept {
+		OrderTable::ProbeStats t;
+	#if TABLE_MODE == 1
+		for (const auto& b : books_) {
+			const auto& p = b.order_table().probes;
+			t.calls += p.calls; t.steps += p.steps; if (p.max > t.max) t.max = p.max;
+		}
+	#else
+		t.calls = orders_.probes.calls; t.steps = orders_.probes.steps; t.max = orders_.probes.max;
+	#endif
+		return t;
+	}
+#endif
+
 #if TABLE_MODE == 2
 	void add(uint16_t locate, uint64_t ref, char side, uint32_t price, uint32_t shares) {
 		const LevelRef r = books_[locate].add_to_level(side, price, shares);

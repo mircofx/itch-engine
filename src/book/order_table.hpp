@@ -33,6 +33,22 @@ class OpenTable {
 
 	static constexpr uint32_t INITIAL_LOG2 = 6;
 
+#ifdef PROBE_STATS
+	// Diagnostics only (-DPROBE_STATS): slots examined per find/insert. Never in a benchmarked build.
+public:
+	struct ProbeStats { uint64_t calls = 0, steps = 0, max = 0; };
+	ProbeStats probes;
+private:
+	void record(uint64_t steps) noexcept {
+		probes.calls++;
+		probes.steps += steps;
+		if (steps > probes.max) probes.max = steps;
+	}
+#define PROBE_RECORD(n) record(n)
+#else
+#define PROBE_RECORD(n) ((void)0)
+#endif
+
 	uint32_t index_of(uint64_t ref) const noexcept {
 #if HASH_MODE == 0
 		// identity: NASDAQ refs are near sequential, so consecutive orders land in consecutive slots. Great locality, but sequential keys plus deletion can build long clusters.
@@ -82,11 +98,13 @@ public:
 
 	S* find(uint64_t ref) noexcept {
 		uint32_t i = index_of(ref);
-		for (;;) {
+		for (uint64_t n = 1;; ++n) {
 			if (slots_[i].ref == ref) {
+				PROBE_RECORD(n);
 				return &slots_[i];
 			}
 			if (slots_[i].ref == 0) {
+				PROBE_RECORD(n);
 				return nullptr;
 			}
 
@@ -106,9 +124,13 @@ public:
 		}
 
 		uint32_t i = index_of(ref);
+		uint64_t n = 1;
 		while (slots_[i].ref != 0 && slots_[i].ref != ref) {
 			i = (i + 1) & mask_;
+			++n;
 		}
+		PROBE_RECORD(n);
+		(void)n;
 		if (slots_[i].ref == 0) {
 			++size_;
 		}
@@ -142,6 +164,8 @@ public:
 		}
 	}
 };
+
+#undef PROBE_RECORD
 
 // TABLE_MODE 1: the per-instrument table, same API as before so LadderBook's call sites are unchanged.
 class OrderTable : public OpenTable<Slot> {

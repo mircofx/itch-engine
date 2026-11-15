@@ -305,6 +305,13 @@ int main(int argc, char** argv) {
 	}
 	std::printf("ladder   : missing=%lu overflow=%lu subtick=%lu\n",
 		lad_missing, lad_overflow, lad_subtick);
+#if defined(PROBE_STATS) && TABLE_MODE >= 1
+	{
+		const auto p = books_fast.probe_stats();
+		std::printf("probes   : calls=%lu slots=%lu avg=%.3f max=%lu\n",
+			p.calls, p.steps, p.calls ? double(p.steps) / double(p.calls) : 0.0, p.max);
+	}
+#endif
 #endif
 
 #if BOOK_MODE == 2

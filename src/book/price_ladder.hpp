@@ -307,6 +307,9 @@ public:
 
 	uint64_t missing_refs() const noexcept { return missing_ref_count; }
 	uint64_t overflows()    const noexcept { return overflow_count; }
+#if defined(PROBE_STATS) && TABLE_MODE == 1
+	const OrderTable& order_table() const noexcept { return orders_; }
+#endif
 	uint64_t subticks()     const noexcept { return subtick_count; }
 	uint64_t scans()        const noexcept { return scan_steps; }
 };

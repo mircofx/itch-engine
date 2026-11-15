@@ -93,7 +93,8 @@ VARIANTS=(
 REPS=${REPS:-1}   # e.g. REPS=5 ./results/bench_counters.sh
 RAW=$(mktemp)
 COMMIT=$(git -C "$SRC" rev-parse --short HEAD)
-git -C "$SRC" diff --quiet HEAD -- src CMakeLists.txt || COMMIT="$COMMIT+dirty"
+# --ignore-cr-at-eol: WSL's git sees every CRLF file checked out by Windows git as modified, which made a clean tree report +dirty
+git -C "$SRC" diff --quiet --ignore-cr-at-eol HEAD -- src CMakeLists.txt || COMMIT="$COMMIT+dirty"
 echo "# start $(date -Iseconds) commit=$COMMIT events=user-only reps=$REPS"
 
 # Build everything first, then interleave the runs (rep 1 of every variant, then rep 2, ...),
