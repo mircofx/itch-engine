@@ -22,7 +22,7 @@
 int main(int argc, char** argv) {
 	if (argc < 2) { std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]); return 1; }
 	// What this binary was actually compiled with. bench_counters.sh checks this line against the flags it passed, so a -D that nothing reads can't silently produce a "variant".
-	std::printf("config   : BOOK_MODE=%d TABLE_MODE=%d HASH_MODE=%d LADDER_WIDTH=%d\n", BOOK_MODE, TABLE_MODE, HASH_MODE, LADDER_WIDTH);
+	std::printf("config   : BOOK_MODE=%d TABLE_MODE=%d HASH_MODE=%d LADDER_WIDTH=%d LEVEL_BYTES=%d\n", BOOK_MODE, TABLE_MODE, HASH_MODE, LADDER_WIDTH, LEVEL_BYTES);
 
 	OrderTable t;
 	const uint64_t N = 5000;
@@ -322,6 +322,13 @@ int main(int argc, char** argv) {
 		}
 		std::printf("ovwhere  : subpenny=%lu below=%lu,%lu,%lu,%lu above=%lu,%lu,%lu,%lu\n",
 			sub, below[0], below[1], below[2], below[3], above[0], above[1], above[2], above[3]);
+		uint64_t max_sh = 0, max_ord = 0;
+		for (const auto& b : books_fast) {
+			if (b.max_level_shares > max_sh) max_sh = b.max_level_shares;
+			if (b.max_level_orders > max_ord) max_ord = b.max_level_orders;
+		}
+		std::printf("levelmax : shares=%lu (%.4f%% of UINT32_MAX) orders=%lu (%.2f%% of UINT16_MAX)\n",
+			max_sh, 100.0 * double(max_sh) / 4294967295.0, max_ord, 100.0 * double(max_ord) / 65535.0);
 	}
 #endif
 #endif

@@ -3,6 +3,7 @@
 #include <map>
 #include <cstdint>
 #include <cassert>
+#include <limits>
 #include "../book/types.hpp"
 #include "../book/order_table.hpp"
 
@@ -10,8 +11,9 @@
 
 // Build-variant switches. #ifndef so -D on the command line wins. Every binary prints the values it was compiled with (main.cpp, main_threaded.cpp) and bench_counters.sh refuses to record a run whose printed config doesn't match what it asked for.
 // History: until this guard existed, WIDTH was a hard-coded 8192 and -DLADDER_WIDTH was silently ignored, so the original width sweep compared four identical binaries.
+// Default 16384 (163.84 USD window) with 8-byte levels: the same ladder memory as the old 8192 x 16-byte default, with half the overflow traffic.
 #ifndef LADDER_WIDTH
-#define LADDER_WIDTH 8192
+#define LADDER_WIDTH 16384
 #endif
 #ifndef TABLE_MODE
 #define TABLE_MODE 1        // 0 = std::unordered_map per book, 1 = OrderTable per book, 2 = one global table (ladder_engine.hpp)
@@ -29,7 +31,7 @@ struct LevelRef {
 
 class LadderBook {
 	static constexpr uint32_t TICK = 100;
-	static constexpr uint32_t WIDTH = LADDER_WIDTH;	// 8192 = circa 81.92USD window, sized to avoid overflow
+	static constexpr uint32_t WIDTH = LADDER_WIDTH;	// ticks of 1 cent; sized to keep orders out of the overflow map, see paper section 7
 	uint64_t miss_reduce_ = 0, miss_erase_ = 0, miss_replace_ = 0;
 
 #if TABLE_MODE == 0
@@ -61,7 +63,14 @@ public:
 	// Diagnostics only: where overflow adds land. near/mid/wide/far = caught by a window 2x/4x/16x as wide around the same centre, or not even then.
 	struct OverflowStats { uint64_t subpenny = 0, below[4] = {}, above[4] = {}; };
 	OverflowStats ovs;
+	// Largest share total and order count any level reached (ladder or overflow): can Level shrink to 32-bit shares / 16-bit count?
+	uint64_t max_level_shares = 0, max_level_orders = 0;
 private:
+	void track_level_max(const Level& l) noexcept {
+		if (l.total_shares > max_level_shares) max_level_shares = l.total_shares;
+		if (l.order_count > max_level_orders) max_level_orders = l.order_count;
+	}
+#define TRACK_LEVEL_MAX(l) track_level_max(l)
 	static int ov_bucket(uint64_t ticks_outside) noexcept {
 		if (ticks_outside <= WIDTH / 2)      return 0;
 		if (ticks_outside <= 3 * WIDTH / 2)  return 1;
@@ -76,6 +85,7 @@ private:
 #define CLASSIFY_OVERFLOW(p) classify_overflow(p)
 #else
 #define CLASSIFY_OVERFLOW(p) ((void)0)
+#define TRACK_LEVEL_MAX(l) ((void)0)
 #endif
 
 	// Single source of truth for "does this price live in the array?"
@@ -147,8 +157,10 @@ public:
 		uint32_t idx = 0;
 		if (to_slot(price, idx)) {
 			Level& lvl = side_levels(side)[idx];
+			assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
 			lvl.total_shares += shares;
 			lvl.order_count += 1;
+			TRACK_LEVEL_MAX(lvl);
 			if (side == 'B' && idx > best_bid_hint_)
 			{
 				best_bid_hint_ = idx;
@@ -162,8 +174,10 @@ public:
 		overflow_count++;
 		CLASSIFY_OVERFLOW(price);
 		Level& lvl = side_overflow(side)[price];
+		assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
 		lvl.total_shares += shares;
 		lvl.order_count += 1;
+		TRACK_LEVEL_MAX(lvl);
 		return { &lvl, true };
 	}
 
@@ -180,8 +194,10 @@ public:
 		uint32_t idx = 0;
 		if (to_slot(price, idx)) {
 			Level& lvl = side_levels(side)[idx];
+			assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
 			lvl.total_shares += shares;
 			lvl.order_count += 1;
+			TRACK_LEVEL_MAX(lvl);
 			if (side == 'B' && idx > best_bid_hint_)
 			{
 				best_bid_hint_ = idx;
@@ -195,8 +211,10 @@ public:
 			overflow_count++;
 			CLASSIFY_OVERFLOW(price);
 			Level& lvl = side_overflow(side)[price];
+			assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
 			lvl.total_shares += shares;
 			lvl.order_count += 1;
+			TRACK_LEVEL_MAX(lvl);
 		}
 
 		orders_.insert(ref, price, shares, side);

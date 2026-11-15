@@ -15,16 +15,16 @@ class OrderBook {
 	// std::map keeps them ordered; we read the extreme end for best bid/ask.
 	//   bids: best = highest price  -> rbegin()
 	//   asks: best = lowest  price  -> begin()
-	std::map<uint32_t, Level> bids_;
-	std::map<uint32_t, Level> asks_;
+	std::map<uint32_t, NaiveLevel> bids_;
+	std::map<uint32_t, NaiveLevel> asks_;
 	uint64_t missing_ref_count = 0;
 public:
 	// It can be last, inside the class body order doesn't count
-	std::map<uint32_t, Level>& side_map(char side) {
+	std::map<uint32_t, NaiveLevel>& side_map(char side) {
 		return (side == 'B') ? bids_ : asks_;
 	}
 
-	const std::map<uint32_t, Level>& side_map(char side) const {
+	const std::map<uint32_t, NaiveLevel>& side_map(char side) const {
 		return (side == 'B') ? bids_ : asks_;
 	}
 
@@ -32,7 +32,7 @@ public:
 	void add(uint64_t ref, char side, uint32_t price, uint32_t shares) {
 		orders_[ref] = Order{ ref, price, shares, side };
 
-		Level& lvl = side_map(side)[price];
+		NaiveLevel& lvl = side_map(side)[price];
 		lvl.total_shares += shares;
 		lvl.order_count += 1;
 	};
@@ -49,7 +49,7 @@ public:
 
 		assert(shares_removed <= o.shares);
 
-		Level& lvl = side_map(o.side)[o.price];
+		NaiveLevel& lvl = side_map(o.side)[o.price];
 		lvl.total_shares -= shares_removed;
 
 		o.shares -= shares_removed;
@@ -73,7 +73,7 @@ public:
 		}
 
 		Order& o = it->second;
-		Level& lvl = side_map(o.side)[o.price];
+		NaiveLevel& lvl = side_map(o.side)[o.price];
 
 		// removes traces of the order from the level
 		lvl.total_shares -= o.shares;

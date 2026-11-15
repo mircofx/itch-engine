@@ -6,7 +6,7 @@
 #include "../book/types.hpp"
 
 #ifndef HASH_MODE
-#define HASH_MODE 0	// 0, identity, 1 fibonacci
+#define HASH_MODE 1	// 0 identity, 1 fibonacci (default: identity clusters on near-sequential refs, see paper section 7)
 #endif
 class MapOrderTable {
 	std::unordered_map<uint64_t, Slot> m_;

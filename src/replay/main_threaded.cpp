@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	std::printf("config   : TABLE_MODE=%d HASH_MODE=%d LADDER_WIDTH=%d\n", TABLE_MODE, HASH_MODE, LADDER_WIDTH);
+	std::printf("config   : TABLE_MODE=%d HASH_MODE=%d LADDER_WIDTH=%d LEVEL_BYTES=%d\n", TABLE_MODE, HASH_MODE, LADDER_WIDTH, LEVEL_BYTES);
 	MmapReader r(argv[1]);
 	LadderEngine books;		// 65536 books indexed by stock_locate (+ the global order table in TABLE_MODE 2)
 

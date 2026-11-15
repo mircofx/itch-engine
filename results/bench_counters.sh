@@ -78,31 +78,44 @@ run() {     # $1 = label, $2 = build dir, $3 = expected config line
 
 # TABLE_MODE: 0 = unordered_map per book, 1 = open-addressed per book, 2 = one global open-addressed table with order -> Level* (ladder_engine.hpp)
 # HASH_MODE is ignored by TABLE_MODE 0 but passed anyway so every line of the config check is explicit.
-#            label                 build name  TABLE HASH WIDTH
-VARIANTS=(
-  "map,        W=8192|map8192|0|0|8192"
-  "table-id,   W=8192|id8192|1|0|8192"
-  "table-fib,  W=8192|fib8192|1|1|8192"
-  "table-fib,  W=4096|fib4096|1|1|4096"
-  "table-fib,  W=1024|fib1024|1|1|1024"
-  "table-fib,  W=512|fib512|1|1|512"
-  "global-id,  W=8192|gid8192|2|0|8192"
-  "global-fib, W=8192|gfib8192|2|1|8192"
-)
+# LEVEL_BYTES: 16 = 64-bit share total per price level (padded), 8 = 32-bit total.
+# Labels must stay two words ("name, W=..."): the summary below counts columns.
+#            label                 build name  TABLE HASH WIDTH LEVEL
+if [ "${VARIANT_SET:-matrix}" = "level" ]; then
+  # VARIANT_SET=level: does an 8-byte Level pay off, alone and spent on 2x the width at the same memory?
+  VARIANTS=(
+    "fib-L16,    W=8192|fib8192l16|1|1|8192|16"
+    "fib-L8,     W=8192|fib8192l8|1|1|8192|8"
+    "fib-L8,     W=16384|fib16384l8|1|1|16384|8"
+  )
+else
+  VARIANTS=(
+    "map,        W=8192|map8192|0|0|8192|16"
+    "table-id,   W=8192|id8192|1|0|8192|16"
+    "table-fib,  W=8192|fib8192|1|1|8192|16"
+    "table-fib,  W=4096|fib4096|1|1|4096|16"
+    "table-fib,  W=1024|fib1024|1|1|1024|16"
+    "table-fib,  W=512|fib512|1|1|512|16"
+    "global-id,  W=8192|gid8192|2|0|8192|16"
+    "global-fib, W=8192|gfib8192|2|1|8192|16"
+    "fib-L8,     W=8192|fib8192l8|1|1|8192|8"
+    "fib-L8,     W=16384|fib16384l8|1|1|16384|8"
+  )
+fi
 
 REPS=${REPS:-1}   # e.g. REPS=5 ./results/bench_counters.sh
 RAW=$(mktemp)
 COMMIT=$(git -C "$SRC" rev-parse --short HEAD)
 # --ignore-cr-at-eol: WSL's git sees every CRLF file checked out by Windows git as modified, which made a clean tree report +dirty
 git -C "$SRC" diff --quiet --ignore-cr-at-eol HEAD -- src CMakeLists.txt || COMMIT="$COMMIT+dirty"
-echo "# start $(date -Iseconds) commit=$COMMIT events=user-only reps=$REPS"
+echo "# start $(date -Iseconds) commit=$COMMIT events=user-only reps=$REPS set=${VARIANT_SET:-matrix}"
 
 # Build everything first, then interleave the runs (rep 1 of every variant, then rep 2, ...),
 # so slow drift in machine state spreads across all variants instead of biasing the last ones.
 declare -A DIR
 for v in "${VARIANTS[@]}"; do
-  IFS='|' read -r label name t h w <<< "$v"
-  DIR[$name]=$(build "$name" "-DBOOK_MODE=1 -DTABLE_MODE=$t -DHASH_MODE=$h -DLADDER_WIDTH=$w")   # set -e aborts on failure
+  IFS='|' read -r label name t h w lb <<< "$v"
+  DIR[$name]=$(build "$name" "-DBOOK_MODE=1 -DTABLE_MODE=$t -DHASH_MODE=$h -DLADDER_WIDTH=$w -DLEVEL_BYTES=$lb")   # set -e aborts on failure
 done
 
 printf "%-4s %-22s %9s %11s %11s %11s %10s\n" \
@@ -110,8 +123,8 @@ printf "%-4s %-22s %9s %11s %11s %11s %10s\n" \
 
 for rep in $(seq 1 "$REPS"); do
   for v in "${VARIANTS[@]}"; do
-    IFS='|' read -r label name t h w <<< "$v"
-    row=$(run "$label" "${DIR[$name]}" "BOOK_MODE=1 TABLE_MODE=$t HASH_MODE=$h LADDER_WIDTH=$w")   # set -e aborts on CONFIG MISMATCH
+    IFS='|' read -r label name t h w lb <<< "$v"
+    row=$(run "$label" "${DIR[$name]}" "BOOK_MODE=1 TABLE_MODE=$t HASH_MODE=$h LADDER_WIDTH=$w LEVEL_BYTES=$lb")   # set -e aborts on CONFIG MISMATCH
     printf "%-4s %s\n" "$rep" "$row"
     echo "$name $row" >> "$RAW"
   done
@@ -127,7 +140,7 @@ if [ "$REPS" -gt 1 ]; then
   echo "MEDIAN of $REPS interleaved runs (min-max in brackets)"
   printf "%-22s %9s %13s %11s %10s %13s\n" VARIANT "M msg/s" "(range)" "instr(G)" "miss/msg" "(range)"
   for v in "${VARIANTS[@]}"; do
-    IFS='|' read -r label name t h w <<< "$v"
+    IFS='|' read -r label name t h w lb <<< "$v"
     printf "%-22s %9s %13s %11s %10s %13s\n" "$label" \
       "$(col "$name" 4 | med)" "($(col "$name" 4 | range))" \
       "$(col "$name" 5 | med)" \
