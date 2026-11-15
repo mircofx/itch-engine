@@ -376,7 +376,7 @@ Ladder width (8192 $\to$ 512) &
 Large win once the ladder fits in cache. &
 The opposite: misses per message \emph{rise} \PctWidthMiss{} (\CfibP{} $\to$ \CfibhP) and instructions \PctWidthInstr, monotonically with each halving.
 Overflow adds go from \DfibOv\,M to \DfibhOv\,M. \textbf{Prediction wrong.} &
-Keep 8192, sized for overflow avoidance. A wider or re-centring window is the next thing to test. \\\addlinespace
+Keep 8192. Wider would double memory to catch about half of the remaining overflow (see below). \\\addlinespace
 Identity vs.\ Fibonacci hash &
 Identity wins on locality: NASDAQ refs are nearly sequential. &
 Per-book tables: Fibonacci \PctHashInstr{} fewer instructions, \PctHashMiss{} fewer misses, fewer in \CidPair{} rounds. Small but consistent. In one global table, identity is catastrophic (\GidInstrX$\times$ the instructions). &
@@ -404,6 +404,26 @@ Validate at each entry point; regression test added. \\\bottomrule
 so a smaller array was expected to stay hot in cache. That part is true, but it ignores where the excluded prices go.
 Every price outside the window is stored in a \code{std::map}, and each add, execute or cancel there is a tree walk through heap nodes instead of one array index.
 Shrinking the window from 8192 to 512 ticks multiplies the overflow traffic by \OvWidthX$\times$, and that costs far more than a larger array saves.
+
+\paragraph{Why not wider, then?} If narrower is worse, wider might be better. A diagnostic build classified each of the \DfibOv\,M overflow adds at $W{=}8192$
+by the window that would have caught it (same centre, Table~\ref{tab:ovwhere}).
+Doubling the width would catch \OvTwoPct{} of them; \OvSubPct{} are sub-penny and no window can hold them; the rest lie far from the market, \OvAbovePct{} of all overflow above the window.
+For instruments first priced under about 41\,USD the window cannot extend below a price of zero, so doubling also extends it upwards by more than half a width, which makes \OvTwoPct{} a slight underestimate.
+On the cost side, a run at $W{=}8192$ already peaks at \RssGB\,GiB resident (ladders plus the mapped file), on a VM with 7\,GB; doubling the width would double the ladders' share.
+Extrapolating from the 4096$\to$8192 step, catching half of the remaining overflow would save roughly 5--9\% of misses, before paying for the larger footprint in page-table misses and page-cache pressure.
+That is not worth it here, so 8192 stays. A cheaper route to the same effect is a smaller \code{Level} (below).
+
+\begin{table}[h]\centering\small
+\caption{Where overflow adds land at $W{=}8192$ (diagnostic build, untimed): which window around the same centre would have caught them.}\label{tab:ovwhere}
+\begin{tabular}{l r r}\toprule
+bucket & adds (M) & share \\\midrule
+sub-penny (never fits a ladder) & \OvSub & \OvSubPct \\
+caught by $2\times$ width (16{,}384) & \OvTwo & \OvTwoPct \\
+caught by $4\times$ width & \OvFour & \OvFourPct \\
+caught by $16\times$ width & \OvSixteen & \OvSixteenPct \\
+beyond $16\times$ & \OvBeyond & \OvBeyondPct \\\bottomrule
+\end{tabular}
+\end{table}
 
 \paragraph{Why identity hashing costs little per book, and breaks a global table.} Identity hashing maps near-sequential references to neighbouring slots.
 With linear probing, those runs merge into long occupied blocks (primary clustering), and any lookup that lands in one has to walk to its end.
@@ -497,7 +517,8 @@ commits \code{\Commit} and \code{\CountersCommit}, built with assertions enabled
   \item \textbf{Shard \code{apply} across consumers by \code{stock\_locate}.} Book updates are the bottleneck however many threads there are,
         and different instruments' books are independent.
   \item \textbf{Attack the book-object miss}: a compact locate-to-dense-index remap, or keeping hot book headers together.
-  \item \textbf{A wider or re-centring ladder.} Misses fall with every doubling of the width up to 8192; whether 16{,}384 or a window that re-centres on the touch removes the remaining \DfibOv\,M overflow adds is untested.
+  \item \textbf{A smaller \code{Level}.} A level is 16 bytes (a 64-bit share total and a 32-bit count, padded). If share totals fit in 32 bits, which the data would have to confirm,
+        an 8-byte level halves the ladders' memory and cache footprint, and would allow twice the width at today's memory. Widening the current layout is not worth it (Section~\ref{sec:decisions}).
   \item \textbf{Latency histograms} via \code{rdtsc}, per message type.
   \item \textbf{Pinned-core measurement} on bare-metal Linux.
   \item \textbf{M4: MoldUDP64} transport, gap detection and recovery.

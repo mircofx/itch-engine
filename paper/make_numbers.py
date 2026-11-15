@@ -81,7 +81,7 @@ for nm, runs in raw.items():
                      f"instr={C[nm]['I']:.2f} miss/msg={C[nm]['P']:.2f} [{C[nm]['Plo']:.2f},{C[nm]['Phi']:.2f}]")
 
 def pct(x):
-    return f"{x * 100:.0f}\%"
+    return f"{x * 100:.0f}\\%"
 
 fib, mp, idt, w512, gid, gfib = C["fib"], C["map"], C["id"], C["fibh"], C["gid"], C["gfib"]
 macros["CountersReps"] = str(reps.pop())
@@ -121,6 +121,27 @@ for nm, d in D.items():
     macros[f"D{tag}Avg"] = f"{d['avg']:.2f}"
     macros[f"D{tag}Max"] = f"{d['max']:,}".replace(",", "{,}")
 macros["OvWidthX"] = f"{D['fib512']['ov'] / D['fib8192']['ov']:.1f}"
+
+# where W=8192's overflow adds land: sub-penny, or caught by a window 2x/4x/16x as wide around the same centre, or beyond
+ow = None
+for line in (R / "diag.txt").read_text().splitlines():
+    m = re.match(r"^ovwhere fib8192 subpenny=(\d+) below=([\d,]+) above=([\d,]+)", line)
+    if m:
+        below = [int(x) for x in m.group(2).split(",")]
+        above = [int(x) for x in m.group(3).split(",")]
+        ow = {"sub": int(m.group(1)), "b": [b + a for b, a in zip(below, above)], "above": sum(above)}
+    m = re.match(r"^diag fib8192 .* maxrss_kb=(\d+)", line)
+    if m:
+        macros["RssGB"] = f"{int(m.group(1)) / 1024 / 1024:.1f}"
+assert ow is not None and "RssGB" in macros, "diag.txt lacks the ovwhere/maxrss lines for fib8192"
+tot = D["fib8192"]["ov"]
+assert ow["sub"] + sum(ow["b"]) == tot, f"ovwhere buckets {ow} don't add up to overflow={tot}"
+for name, v in (("Sub", ow["sub"]), ("Two", ow["b"][0]), ("Four", ow["b"][1]), ("Sixteen", ow["b"][2]), ("Beyond", ow["b"][3])):
+    macros[f"Ov{name}"] = f"{v / 1e6:.2f}"
+    macros[f"Ov{name}Pct"] = pct(v / tot)
+macros["OvAbovePct"] = pct(ow["above"] / tot)
+lines_out.append(f"ovwhere fib8192 sub={ow['sub']:,} 2x={ow['b'][0]:,} 4x={ow['b'][1]:,} 16x={ow['b'][2]:,} beyond={ow['b'][3]:,} "
+                 f"above={ow['above'] / tot:.0%} rss={macros['RssGB']} GB")
 macros["PctFewerLookups"] = pct(1 - D['gfib8192']['calls'] / D['fib8192']['calls'])   # mode 2 probes once per op
 macros["LookupsPerBook"] = f"{D['fib8192']['calls'] / 1e6:.1f}"
 macros["LookupsGlobal"] = f"{D['gfib8192']['calls'] / 1e6:.1f}"
