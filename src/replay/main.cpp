@@ -312,6 +312,18 @@ int main(int argc, char** argv) {
 			p.calls, p.steps, p.calls ? double(p.steps) / double(p.calls) : 0.0, p.max);
 	}
 #endif
+#ifdef PROBE_STATS
+	{
+		// where overflow adds land, relative to each book's window: caught by 2x / 4x / 16x the width around the same centre, or beyond
+		uint64_t sub = 0, below[4] = {}, above[4] = {};
+		for (const auto& b : books_fast) {
+			sub += b.ovs.subpenny;
+			for (int i = 0; i < 4; ++i) { below[i] += b.ovs.below[i]; above[i] += b.ovs.above[i]; }
+		}
+		std::printf("ovwhere  : subpenny=%lu below=%lu,%lu,%lu,%lu above=%lu,%lu,%lu,%lu\n",
+			sub, below[0], below[1], below[2], below[3], above[0], above[1], above[2], above[3]);
+	}
+#endif
 #endif
 
 #if BOOK_MODE == 2

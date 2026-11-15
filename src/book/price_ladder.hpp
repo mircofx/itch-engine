@@ -56,6 +56,28 @@ class LadderBook {
 
 	uint32_t to_price(uint32_t idx) const { return base_ + idx * TICK; }
 
+#ifdef PROBE_STATS
+public:
+	// Diagnostics only: where overflow adds land. near/mid/wide/far = caught by a window 2x/4x/16x as wide around the same centre, or not even then.
+	struct OverflowStats { uint64_t subpenny = 0, below[4] = {}, above[4] = {}; };
+	OverflowStats ovs;
+private:
+	static int ov_bucket(uint64_t ticks_outside) noexcept {
+		if (ticks_outside <= WIDTH / 2)      return 0;
+		if (ticks_outside <= 3 * WIDTH / 2)  return 1;
+		if (ticks_outside <= 15 * WIDTH / 2) return 2;
+		return 3;
+	}
+	void classify_overflow(uint32_t price) noexcept {
+		if ((price % TICK) != 0) { ovs.subpenny++; return; }
+		if (price < base_) { ovs.below[ov_bucket((base_ - price) / TICK)]++; return; }
+		ovs.above[ov_bucket((uint64_t(price) - base_) / TICK - WIDTH + 1)]++;
+	}
+#define CLASSIFY_OVERFLOW(p) classify_overflow(p)
+#else
+#define CLASSIFY_OVERFLOW(p) ((void)0)
+#endif
+
 	// Single source of truth for "does this price live in the array?"
 	// Must be identical on the add path and the find path, or adds and deletes route to different places and the accounting silently breaks.
 	bool to_slot(uint32_t price, uint32_t& idx) const {
@@ -138,6 +160,7 @@ public:
 			return { &lvl, false };
 		}
 		overflow_count++;
+		CLASSIFY_OVERFLOW(price);
 		Level& lvl = side_overflow(side)[price];
 		lvl.total_shares += shares;
 		lvl.order_count += 1;
@@ -170,6 +193,7 @@ public:
 		}
 		else {
 			overflow_count++;
+			CLASSIFY_OVERFLOW(price);
 			Level& lvl = side_overflow(side)[price];
 			lvl.total_shares += shares;
 			lvl.order_count += 1;

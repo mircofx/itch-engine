@@ -20,11 +20,15 @@ diag() {    # $1 = name, $2 = TABLE_MODE, $3 = HASH_MODE, $4 = LADDER_WIDTH
     -DITCH_BUILD_TESTS=OFF -DITCH_BUILD_BENCH=OFF \
     -DCMAKE_CXX_FLAGS="-DPROBE_STATS -DBOOK_MODE=1 -DTABLE_MODE=$2 -DHASH_MODE=$3 -DLADDER_WIDTH=$4" > /dev/null 2>&1
   cmake --build "$d" -j > /dev/null 2>&1
-  local out ov pr
-  out=$("$d/itch_engine" "$DATA")
+  local out ov pr rss
+  # /usr/bin/time -f %M: peak resident memory in KB (includes the mapped file's resident pages)
+  out=$(/usr/bin/time -f "maxrss_kb %M" "$d/itch_engine" "$DATA" 2>&1)
+  rss=$(awk '/^maxrss_kb/ {print $2}' <<< "$out")
   ov=$(awk '/^ladder *: missing/ {for (i=1;i<=NF;i++) if ($i ~ /^overflow=/) {sub(/overflow=/,"",$i); print $i}}' <<< "$out")
   pr=$(awk '/^probes/ {sub(/^probes *: */,""); print}' <<< "$out")
-  echo "diag $1 overflow=$ov $pr"
+  echo "diag $1 overflow=$ov $pr maxrss_kb=$rss"
+  # buckets: caught by a window 2x / 4x / 16x as wide around the same centre, or beyond
+  awk -v n="$1" '/^ovwhere/ {sub(/^ovwhere *: */,""); print "ovwhere " n " " $0}' <<< "$out"
 }
 
 diag id8192   1 0 8192
