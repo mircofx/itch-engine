@@ -1,16 +1,29 @@
-# start 2026-11-15T13:09:58+01:00 commit=6dc322b flags=-DPROBE_STATS
-diag id8192 overflow=4026800 calls=105895977 slots=258710987 avg=2.443 max=1892 maxrss_kb=4424036
+# start 2026-11-15T14:08:42+01:00 commit=037b404 flags=-DPROBE_STATS
+diag id8192 overflow=4026800 calls=105895977 slots=258710987 avg=2.443 max=1892 maxrss_kb=4425020
 ovwhere id8192 subpenny=130697 below=93231,9437,119576,255076 above=1857385,890816,459895,210687
-diag fib8192 overflow=4026800 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=4424044
+levelmax id8192 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag fib8192 overflow=4026800 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=4425140
 ovwhere fib8192 subpenny=130697 below=93231,9437,119576,255076 above=1857385,890816,459895,210687
-diag fib4096 overflow=8670263 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=3314440
+levelmax fib8192 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag fib4096 overflow=8670263 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=3315404
 ovwhere fib4096 subpenny=130697 below=373827,93231,24506,359583 above=3425196,2270928,1722700,269595
-diag fib1024 overflow=17287939 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=2490680
+levelmax fib4096 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag fib1024 overflow=17287939 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=2491848
 ovwhere fib1024 subpenny=130697 below=836326,585188,467058,384089 above=2141637,3248369,7085575,2409000
-diag fib512 overflow=20388517 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=2356092
+levelmax fib1024 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag fib512 overflow=20388517 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=2357156
 ovwhere fib512 subpenny=130697 below=1074830,836326,959015,477320 above=1840994,2073788,7188548,5806999
-diag gid8192 overflow=4026800 calls=68413186 slots=48382223109 avg=707.206 max=105698 maxrss_kb=4340052
+levelmax fib512 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag gid8192 overflow=4026800 calls=68413186 slots=48382223109 avg=707.206 max=105698 maxrss_kb=4341076
 ovwhere gid8192 subpenny=130697 below=93231,9437,119576,255076 above=1857385,890816,459895,210687
-diag gfib8192 overflow=4026800 calls=68413186 slots=116276063 avg=1.700 max=34 maxrss_kb=4340044
+levelmax gid8192 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag gfib8192 overflow=4026800 calls=68413186 slots=116276063 avg=1.700 max=34 maxrss_kb=4341024
 ovwhere gfib8192 subpenny=130697 below=93231,9437,119576,255076 above=1857385,890816,459895,210687
-# end 2026-11-15T13:13:10+01:00
+levelmax gfib8192 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag fib8192l8 overflow=4026800 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=3311876
+ovwhere fib8192l8 subpenny=130697 below=93231,9437,119576,255076 above=1857385,890816,459895,210687
+levelmax fib8192l8 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+diag fib16384l8 overflow=1544691 calls=105895977 slots=166268341 avg=1.570 max=38 maxrss_kb=4423280
+ovwhere fib16384l8 subpenny=130697 below=9437,15069,111019,248564 above=507866,286363,213876,21800
+levelmax fib16384l8 shares=3946387 (0.0919% of UINT32_MAX) orders=2853 (4.35% of UINT16_MAX)
+# end 2026-11-15T14:12:14+01:00

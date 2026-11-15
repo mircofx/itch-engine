@@ -7,12 +7,13 @@
 Uncached full day: \FullDelta, noisy. Small effect, sign depends on I/O. Confirmed.}
 
 \newcommand{\CountersComment}{%
-Four results, ranked by how clearly they clear the noise.
+Five results, ranked by how clearly they clear the noise.
+\textbf{The 8-byte level} (Section~\ref{sec:level}) with twice the width has \PctLevelWideMiss{} fewer misses per message than the old default at the same memory, fewer in \CfibwFewer{} rounds, with ranges far apart.
 \textbf{The open-addressed table} cuts instructions by \PctTableInstr{} and misses per message by \PctTableMiss{} compared with \code{unordered\_map}, with \TableSpeedup$\times$ the throughput; the ranges are far apart.
 \textbf{Ladder width matters}: every halving from $W{=}8192$ to $W{=}512$ adds instructions and misses (\CfibP, \CfibfP, \CfiboP, \CfibhP{} miss/msg), and even the noisy clock separates the ends.
 \textbf{The global table} runs \PctGlobalInstr{} fewer instructions than the per-book one but has \PctGlobalMiss{} more misses per message, in every round, and even its best run misses more than the per-book table's worst.
 With identity hashing it runs \GidInstrX$\times$ the instructions.
-\textbf{Hash choice in per-book tables} is a small effect: Fibonacci runs \PctHashInstr{} fewer instructions and \PctHashMiss{} fewer misses. The miss ranges touch, but identity missed more in \CidPair{} rounds.
+\textbf{Hash choice in per-book tables} is a small effect: Fibonacci runs \PctHashInstr{} fewer instructions and \PctHashMiss{} fewer misses. The miss ranges are separate and identity missed more in \CidPair{} rounds.
 Instruction counts were identical across all \CountersReps{} runs of each variant.}
 
 \newcommand{\MthreeComment}{%

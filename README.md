@@ -75,7 +75,7 @@ That's 64.9M messages replayed into live state with zero missing refs and no cro
 
 ## Status
 
-Current: **M3**, parser and book split across a lock-free single-producer/single-consumer queue, validated identical to the single-threaded path over all symbols. Measured properly, the split is slightly slower on cached data (see *M3 timing* below), which is itself the result: the book, not the parser, is the bottleneck.
+Current: **M3**, parser and book split across a lock-free single-producer/single-consumer queue, validated identical to the single-threaded path over all symbols. Measured properly, the split is slightly slower on cached data (see *M3 timing* below), which is itself the result: the book, not the parser, is the bottleneck. Since then the book got 8-byte price levels and a ladder twice as wide at the same memory, 14% fewer cache misses per message (see *A faster default* below).
 
 How it got here:
 
@@ -143,32 +143,70 @@ Neither result uses core pinning (no taskset, no thread affinity), so this is re
 
 Wall clock on this box has a 20–25% run-to-run spread when anything else is going on, so it can't resolve a 20% change. I rank on perf counters instead.
 
-`perf stat` on the 2 GB slice, user space only (`:u`), commit `2d8d929` (`results/counters_reps5.txt`). Each variant is built once and run 5 times, interleaved (every variant once, then every variant again), so drift spreads across all of them. Median, with min–max in brackets. "Paired" is how many of the 5 rounds the variant missed more than the per-book fibonacci W=8192 table in the same round, which cancels drift that moves a whole round. Probes per lookup come from a separate untimed build with `-DPROBE_STATS` (`results/diag.txt`).
+`perf stat` on the 2 GB slice, user space only (`:u`), commit `037b404` (`results/counters_reps5.txt`). Each variant is built once and run 5 times, interleaved (every variant once, then every variant again), so drift spreads across all of them. Median, with min–max in brackets. "Paired" compares each variant with the old default (per-book fibonacci, 16-byte levels, W=8192) in the same round, which cancels drift that moves a whole round: "more 5/5" means it missed more in all 5 rounds, "fewer 5/5" means it missed less in all 5. Probes per lookup and peak memory come from a separate untimed build with `-DPROBE_STATS` (`results/diag.txt`). All rows use 16-byte price levels except the two marked 8 B.
 
-| variant | instr (G) | miss/msg | paired | M msg/s | probes/lookup |
-|---|---|---|---|---|---|
-| unordered_map, W=8192 | 18.59 | 14.61 (14.24–15.37) | 5/5 | 2.4 (2.3–2.6) | – |
-| per-book, identity, W=8192 | 13.49 | 8.82 (8.59–9.06) | 5/5 | 4.2 (4.1–4.7) | 2.44 |
-| **per-book, fibonacci, W=8192** | **12.91** | **8.34 (8.24–8.69)** | – | **4.8 (4.5–5.1)** | **1.57** |
-| per-book, fibonacci, W=4096 | 13.99 | 9.55 (9.54–9.57) | 5/5 | 4.6 (4.5–4.9) | 1.57 |
-| per-book, fibonacci, W=1024 | 16.13 | 12.79 (12.54–12.83) | 5/5 | 3.9 (3.8–3.9) | 1.57 |
-| per-book, fibonacci, W=512 | 16.87 | 13.85 (13.74–14.05) | 5/5 | 3.6 (3.4–3.7) | 1.57 |
-| global, identity, W=8192 | 554.18 | 16.88 (16.46–17.34) | 5/5 | 1.1 (1.0–1.2) | 707.21 |
-| global, fibonacci, W=8192 | 11.74 | 9.52 (9.47–9.99) | 5/5 | 4.7 (4.3–5.1) | 1.70 |
+| variant | instr (G) | miss/msg | paired | M msg/s | probes/lookup | peak RSS |
+|---|---|---|---|---|---|---|
+| unordered_map, W=8192 | 18.59 | 14.08 (13.95–14.54) | more 5/5 | 2.7 (2.5–2.7) | – | – |
+| per-book, identity, W=8192 | 13.49 | 8.08 (8.03–8.12) | more 5/5 | 5.3 (4.8–5.4) | 2.44 | 4.2 GiB |
+| per-book, fibonacci, W=8192 (old default) | 12.91 | 7.66 (7.63–7.74) | – | 6.0 (5.8–6.1) | 1.57 | 4.2 GiB |
+| per-book, fibonacci, W=4096 | 13.99 | 9.35 (9.25–9.41) | more 5/5 | 5.0 (4.6–5.1) | 1.57 | 3.2 GiB |
+| per-book, fibonacci, W=1024 | 16.13 | 12.60 (12.38–12.64) | more 5/5 | 3.9 (3.9–4.1) | 1.57 | 2.4 GiB |
+| per-book, fibonacci, W=512 | 16.87 | 13.65 (13.57–13.71) | more 5/5 | 3.7 (3.7–3.7) | 1.57 | 2.2 GiB |
+| global, identity, W=8192 | 554.18 | 16.23 (16.04–16.27) | more 5/5 | 1.2 (0.8–1.2) | 707.21 | 4.1 GiB |
+| global, fibonacci, W=8192 | 11.74 | 9.23 (9.12–9.65) | more 5/5 | 5.7 (3.5–5.8) | 1.70 | 4.1 GiB |
+| per-book, fibonacci, **8 B**, W=8192 | 13.11 | 7.32 (7.30–7.42) | fewer 5/5 | 6.2 (5.4–6.3) | 1.57 | 3.2 GiB |
+| **per-book, fibonacci, 8 B, W=16384 (new default)** | **13.02** | **6.62 (6.58–6.76)** | **fewer 5/5** | **6.3 (6.0–6.5)** | **1.57** | **4.2 GiB** |
 
-Instruction counts were identical in all 5 runs of every variant. With the machine left alone, misses stayed within about ±5% and throughput within about ±8%.
+Instruction counts were identical in all 5 runs of every variant. With the machine left alone, misses stayed within about ±5% and throughput within about ±8%. Absolute throughput moves between sessions (the same old-default binary measured 4.8 M msg/s in an earlier session and 6.0 here, cause unknown), so compare rows within one table, never across tables.
 
-**The order table is a real win.** 31% fewer instructions, 43% fewer misses per message, 2x the throughput. Chained maps cost a bucket-array miss plus a pointer chase to a heap node; flat slots with linear probing cost one miss, and the probe walks forward through contiguous memory, which the prefetcher handles for free. Deletion is backward-shift rather than tombstones, because 41% of messages are deletes and tombstoned slots still have to be probed through, so chains would grow without bound.
+**The order table is a real win.** 31% fewer instructions, 46% fewer misses per message, 2.2x the throughput. Chained maps cost a bucket-array miss plus a pointer chase to a heap node; flat slots with linear probing cost one miss, and the probe walks forward through contiguous memory, which the prefetcher handles for free. Deletion is backward-shift rather than tombstones, because 41% of messages are deletes and tombstoned slots still have to be probed through, so chains would grow without bound.
 
-**Ladder width matters, in the opposite direction from what I predicted.** Going from 8192 slots to 512 raises misses by 66% and instructions by 31%, worse with every halving. I expected a smaller ladder to fit in cache and win. The array part of that is true, but every price outside the window goes to the `std::map` overflow, and the overflow adds go from 4.0M at 8192 to 20.4M at 512. A tree walk through heap nodes costs far more than a bigger array saves.
+**Ladder width matters, in the opposite direction from what I predicted.** Going from 8192 slots to 512 raises misses by 78% and instructions by 31%, worse with every halving. I expected a smaller ladder to fit in cache and win. The array part of that is true, but every price outside the window goes to the `std::map` overflow, and the overflow adds go from 4.0M at 8192 to 20.4M at 512. A tree walk through heap nodes costs far more than a bigger array saves.
 
-So why not go wider? 4.0M adds still overflow at 8192, so I classified each one by the window that would have caught it (`ovwhere` in `results/diag.txt`): 48% would fit in 2x the width, 3% are sub-penny and never fit a ladder, and the rest are far from the market (22% need 4x, 14% need 16x, 12% not even that), 85% of them above the window. Meanwhile a W=8192 run already peaks at 4.2 GiB resident (ladders plus the mapped file) on a 7 GB WSL, and going from 4096 to 8192 alone added 1.1 GiB. Doubling the ladders' memory to catch about half the overflow is maybe 5–9% fewer misses, before the bigger footprint costs anything back. Not worth it, 8192 stays. The cheaper route is a smaller `Level`: it's 16 bytes now, and if share totals fit in 32 bits it could be 8, which buys 2x the width at today's memory.
+So why not go wider? 4.0M adds still overflow at 8192, so I classified each one by the window that would have caught it (`ovwhere` in `results/diag.txt`): 48% would fit in 2x the width, 3% are sub-penny and never fit a ladder, and the rest are far from the market (22% need 4x, 14% need 16x, 12% not even that), 85% of them above the window. Meanwhile a W=8192 run already peaks at 4.2 GiB resident (ladders plus the mapped file) on a 7 GB WSL, and going from 4096 to 8192 alone added 1.1 GiB. With 16-byte levels, doubling the ladders' memory to catch about half the overflow isn't worth it. The cheaper route was a smaller `Level`: share totals fit in 32 bits, so a level can be 8 bytes, which buys 2x the width at the same memory. That is now the default, see the next section.
 
-**One global order table didn't pay off.** ITCH refs are unique for the day, so mode 2 keeps every order in one table keyed by ref, with a direct `Level*` per order: execute/cancel/delete skip the book object and find the order once (68.4M lookups instead of 105.9M). Same shape as [WK Selph's order book](https://gist.github.com/halfelf/db1ae032dc34278968f8bf31ee999a25) and [charles-cooper/itch-order-book](https://parallelprogrammer.substack.com/p/fun-new-project-itch-order-simd). It runs 9% fewer instructions but has 14% more misses per message, in every round, and throughput is no better. My read: one table holding every live order is big and cold, while a busy symbol's small table stays hot. That fits the counters but I haven't isolated it. Per-book tables stay the default; mode 2 stays in the code as the measured alternative.
+**One global order table didn't pay off.** ITCH refs are unique for the day, so mode 2 keeps every order in one table keyed by ref, with a direct `Level*` per order: execute/cancel/delete skip the book object and find the order once (68.4M lookups instead of 105.9M). Same shape as [WK Selph's order book](https://gist.github.com/halfelf/db1ae032dc34278968f8bf31ee999a25) and [charles-cooper/itch-order-book](https://parallelprogrammer.substack.com/p/fun-new-project-itch-order-simd). It runs 9% fewer instructions but has 20% more misses per message, in every round, and throughput is no better. My read: one table holding every live order is big and cold, while a busy symbol's small table stays hot. That fits the counters but I haven't isolated it. Per-book tables stay the default; mode 2 stays in the code as the measured alternative.
 
 **Hash choice: small per book, critical globally.** Per-book, fibonacci is 4% fewer instructions and 5% fewer misses, lower in all 5 rounds. Identity hashing puts near-sequential refs in neighbouring slots, and linear probing merges those into long clusters: 2.44 slots per lookup against 1.57, with runs up to 1,892. The per-book tables are small and cached, so that barely costs anything. In one global table the clusters never stop growing: 707 slots per lookup, longest probe 105,698, 43x the instructions. Fibonacci's value is robustness, not speed.
 
 **Correction.** An earlier version of this README (and the paper) said ladder width does nothing. The `-DLADDER_WIDTH` flag was never read, the header hard-coded 8192, so that sweep compared four identical binaries and the spread was noise. Every binary now prints the config it was compiled with, and `bench_counters.sh` refuses to record a run that doesn't match the flags it passed. The old numbers also counted user+kernel, so they aren't comparable with the table above; they're kept in `results/counters.txt`.
+
+## A faster default: the 8-byte price level, explained simply
+
+Every other experiment above corrected a claim, ruled out an idea, or confirmed what was already there. This one made the engine faster. So here it is step by step, because *why* it works, and why it isn't me tuning the code to the benchmark, matters as much as the number.
+
+**A shelf of boxes.** The ladder is a shelf with one box per price, one cent apart. Each box (a `Level`) holds two numbers: the total shares waiting at that price, and how many orders make up that total. Finding a box is one subtraction and one division. A price that doesn't fit on the shelf goes into a side drawer, the overflow `std::map`, and finding it there means walking a tree.
+
+**A desk and a warehouse.** The CPU is a person at a small desk (the cache) next to a big warehouse (main memory). Anything on the desk is at hand; anything in the warehouse is a walk, roughly a hundred times slower. A cache miss is one of those walks, and this engine spends most of its time walking. The desk holds a fixed number of *bytes*, so smaller boxes mean more boxes on the desk and fewer walks.
+
+**Change 1: smaller boxes.** A box used to store its share total as a 64-bit number and its order count as a 32-bit one; alignment pads that to 16 bytes. Storing the total in 32 bits gives two 32-bit numbers, exactly 8 bytes, no padding, eight boxes per 64-byte cache line.
+
+Why not just `alignas`? It can only *raise* alignment, which adds padding, never removes it. And packing the old fields to 12 bytes would leave the 64-bit field misaligned, with some boxes straddling two cache lines. Shrinking the field is the only way to shrink the box.
+
+The one risk is overflow. A 32-bit counter tops out around 4.29 billion; a level whose total went past that would wrap like an odometer, and the book would be silently wrong. So I measured it *before* changing anything (`results/bench_levelmax.sh`, `results/levelmax_fullday.txt`): over the full day, 368,366,634 messages, the fullest level ever held 4,822,255 shares. That's 0.11% of the limit, an 891x margin. The biggest order count was 3,049. Every add also asserts the total can't wrap, and the full day runs with asserts on without one firing.
+
+**Change 2: a longer shelf.** The width sweep showed the drawer is the expensive part, and a shorter shelf makes everything worse. A longer shelf keeps more orders out of the drawer, but with 16-byte boxes it needed more memory than this machine has. Halving the box frees exactly the memory needed to double the shelf. At 16,384 ticks with 8-byte levels the run peaks at 4.2 GiB, the same as the old default, and overflow adds fall from 4.0M to 1.5M (62% fewer). Each change helps on its own; together they unlock each other.
+
+**Results, in two separate sessions.** Session 1 ran only these three variants, 9 interleaved rounds (`results/counters_level_reps9.txt`). Session 2 is the full matrix above, run later on the committed code. "Fewer" and "faster" count the rounds where the variant beat the old default in the same round.
+
+| variant | S1 miss/msg | S1 M msg/s | S1 fewer | S1 faster | S2 miss/msg | S2 M msg/s | S2 fewer | S2 faster |
+|---|---|---|---|---|---|---|---|---|
+| old default (16 B, W=8192) | 7.66 | 6.0 | – | – | 7.66 | 6.0 | – | – |
+| 8 B, W=8192 | 7.34 | 6.3 | 9/9 | 9/9 | 7.32 | 6.2 | 5/5 | 3/5 |
+| **new default (8 B, W=16384)** | **6.57** | **6.5** | **9/9** | **9/9** | **6.62** | **6.3** | **5/5** | **4/5** |
+
+The smaller box alone cuts misses by 4%; spending the freed memory on twice the width gets to 14% fewer. Median throughput is up about 5–8%. Instructions rise slightly (1–2%), and the saved misses more than pay for them. The miss counts of the two sessions agree within about 1%. Throughput is noisier inside the bigger matrix, where ties and one loss show up, but the direction holds.
+
+**Why this isn't overfitting.** Overfitting a benchmark means trying settings until one happens to score well, then calling it an improvement. Five things argue against that here:
+
+1. **Prediction before measurement.** The chain was: the drawer is expensive (measured), width is limited by memory (measured), a smaller level frees memory (arithmetic), so the combination should help. I built two variants to test that, not a search over settings. And the quantities underneath moved the way the mechanism says: overflow adds fell, misses fell.
+2. **Counted work, not just time.** Cache misses count physical events. They fell in every round of both sessions, which a lucky clock reading can't produce.
+3. **Paired rounds.** Variants alternate within each round, so drift moves them together. The new default missed less in 9/9 and 5/5 rounds.
+4. **Identical answers.** The end-of-day top of book for all 8,694 instruments is byte-for-byte identical to the old default, single- and multi-threaded, and the A/B check against the naive book finds no mismatch.
+5. **Replication.** Session 2 ran later, inside the full matrix with its heavy variants, on the committed code, and reproduced session 1.
+
+**Limits.** The 32-bit margin was measured on one trading day. It's 891x, and debug builds check it on every add, but release builds don't: a day that broke it would produce wrong totals silently in a release build. A check that stays on in release would close that gap (it's on the roadmap). Width affects speed, never correctness: an order outside the window still works, through the slower drawer. A day with wider price ranges could only shrink the gain. Speed was measured on the 2 GB slice, since the full day doesn't fit in memory and its timings wait on the disk. On a machine with a bigger cache the gain may be smaller.
 
 ## How I know it's right
 
@@ -263,7 +301,7 @@ cmake --build build -j
 ./build/itch_engine_threaded /path/to/01302019.NASDAQ_ITCH50    # producer/consumer split
 ```
 
-Build variants are compile-time flags: `BOOK_MODE` (0 naive, 1 ladder, 2 both plus A/B validation), `TABLE_MODE` (0 unordered_map, 1 open-addressed per book, 2 one global open-addressed table), `HASH_MODE` (0 identity, 1 fibonacci), `LADDER_WIDTH`, and `PROBE_STATS` (diagnostics only, never in a benchmarked build). Every binary prints a `config :` line with what it was actually compiled with.
+Build variants are compile-time flags: `BOOK_MODE` (0 naive, 1 ladder, 2 both plus A/B validation), `TABLE_MODE` (0 unordered_map, 1 open-addressed per book, 2 one global open-addressed table), `HASH_MODE` (0 identity, 1 fibonacci, the default), `LADDER_WIDTH` (default 16384), `LEVEL_BYTES` (8, the default, or 16), and `PROBE_STATS` (diagnostics only, never in a benchmarked build). Every binary prints a `config :` line with what it was actually compiled with.
 
 ```bash
 REPS=5 ./results/bench_counters.sh
@@ -289,12 +327,14 @@ g++-13 -std=c++23 -O2 -Isrc tests/test_spsc.cpp        -o test_spsc        && ./
 g++-13 -std=c++23 -O2 -Isrc tests/test_decode_side.cpp -o test_decode_side && ./test_decode_side
 ```
 
-`test_spsc`: fill to capacity, refuse when full, FIFO order, wrap-around. `test_decode_side`: valid sides accepted, malformed sides rejected on `'A'`/`'F'`. Both pass on `5f9ee3c` and `2d8d929` (`results/tests.txt`).
+`test_spsc`: fill to capacity, refuse when full, FIFO order, wrap-around. `test_decode_side`: valid sides accepted, malformed sides rejected on `'A'`/`'F'`. Both pass on `5f9ee3c`, `2d8d929` and `037b404` (`results/tests.txt`).
 
 ### Benchmark scripts
 
 * `results/bench_counters.sh`: the perf counter matrix. `REPS=N` builds once and interleaves N rounds, then prints medians and min–max. Events are explicitly `:u`, so results don't depend on `kernel.perf_event_paranoid` (WSL resets it to 2 on restart). Stops with `CONFIG MISMATCH` if a binary wasn't built with the flags it was asked for.
-* `results/bench_diag.sh`: overflow adds per ladder width and probes per lookup per table, from `-DPROBE_STATS` builds. Untimed, it explains the counter matrix rather than replacing it.
+* `results/bench_diag.sh`: overflow adds per ladder width and probes per lookup per table, from `-DPROBE_STATS` builds. Untimed, it explains the counter matrix rather than replacing it. Also logs where overflow adds land (`ovwhere`), the fullest level (`levelmax`) and peak memory.
+* `results/bench_levelmax.sh <file>`: replays the full day to find the largest share total and order count any level reaches, then replays it again with 8-byte levels and asserts on. This is the check that a 32-bit total is safe.
+* `VARIANT_SET=level REPS=9 ./results/bench_counters.sh`: only the three level variants, for a tighter A/B than the full matrix.
 * `results/bench_m3.sh <file> <pairs> <out>`: single vs threaded, both timed by their internal clock, runs interleaved, page cache warmed before each run.
 * `results/make_slice.cpp`: recreates the 64,858,229-message slice (first 2 GB of the day, cut at a message boundary).
 
@@ -317,10 +357,11 @@ Sample data: `emi.nasdaq.com`. Not in the repo, it's 11 GB.
 - [ ] shard apply_command across multiple consumer threads by stock_locate; the actual next throughput lever, since apply is the bottleneck regardless of thread count
 
 - [x] global order table with direct level pointers (mode 2): measured, not kept, see "What the counters say"
-- [x] wider ladder window: classified the 4M overflow adds at W=8192, only half would fit in 2x the width at 2x the memory. Not worth it
-- [ ] 8-byte `Level` (32-bit share total, if the data allows it): half the ladder memory and cache footprint
+- [x] wider ladder window: classified the 4M overflow adds at W=8192, only half would fit in 2x the width at 2x the memory. Not worth it with 16-byte levels
+- [x] 8-byte `Level` (32-bit share total, 891x margin on the full day) plus a 16384-tick ladder at the same memory: 14% fewer misses, now the default
+- [ ] overflow check on level totals that stays on in release builds, so a day beyond the 32-bit margin fails loudly instead of silently
 
-Open: about 8 cache misses per message remain in the book path. Next suspect is the books vector itself, 65,536 LadderBook objects indexed by an effectively random u16 on every message, which is a guaranteed cold miss on the book object before any work even starts. Mode 2 skips the book object on about half the messages but also changes the table size, so it can't separate the two effects.
+Open: about 6.6 cache misses per message remain in the book path. Next suspect is the books vector itself, 65,536 LadderBook objects indexed by an effectively random u16 on every message, which is a guaranteed cold miss on the book object before any work even starts. Mode 2 skips the book object on about half the messages but also changes the table size, so it can't separate the two effects.
 
 ## Run
 

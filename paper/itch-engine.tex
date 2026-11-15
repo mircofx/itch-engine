@@ -50,6 +50,8 @@ cache misses per message by \PctTableMiss{} compared with \code{std::unordered\_
 Shrinking the price ladder 16$\times$ \emph{raises} misses by \PctWidthMiss, because more orders fall outside it into a tree.
 A single global order table with direct level pointers, the layout several published ITCH books use, runs fewer instructions
 but misses more, and was not kept. With identity hashing it is catastrophic: \GidInstrX$\times$ the instructions, from probe clustering on near-sequential order references.
+The one change that made the engine faster: halving each price level to 8 bytes, after checking on the full day that a 32-bit share total cannot overflow,
+and spending the saved memory on twice the ladder width. At the same memory this cuts misses by \PctLevelWideMiss, in every round of two separate sessions, and it is the new default.
 Splitting parsing and book updates across a lock-free single-producer/single-consumer queue
 \MthreeVerdictShort, as expected when book updates cost about 64 times more than decoding.
 Correctness rests on five independent checks, including a differential test against a deliberately naive reference
@@ -220,8 +222,9 @@ Add, find and erase all call it. If the add path and the find path ever disagree
 removed from another, and the totals would drift with no error raised. Best bid and ask are found from a memoised hint that only moves
 toward the touch on add and is re-scanned lazily when the top level empties.
 
-\code{WIDTH} defaults to 8192 ticks (81.92\,USD). That was chosen to keep orders out of the overflow map, not to fit in cache, and Section~\ref{sec:decisions} shows that it matters:
-even at 8192, \DfibOv\,M adds land in the overflow map; at 512 it is \DfibhOv\,M.
+The width exists to keep orders out of the overflow map, not to fit in cache, and Section~\ref{sec:decisions} shows that it matters:
+at 8192 ticks, \DfibOv\,M adds land in the overflow map; at 512 it is \DfibhOv\,M.
+The default is 16{,}384 ticks (163.84\,USD) with 8-byte levels, which costs the same memory as 8192 ticks of the original 16-byte levels (Section~\ref{sec:level}).
 
 \subsection{The order table}
 Order lookup by reference (every execute, cancel, delete and replace) uses an open-addressed table of 24-byte
@@ -295,8 +298,9 @@ which is the same for every variant, and it does not depend on \code{perf\_event
 Each variant is built once and run \CountersReps{} times, interleaved (all variants once, then all again, \ldots) so that drift spreads across variants.
 Tables report the median and the min--max range, and a \emph{paired} count: in how many rounds a variant missed more than the reference variant in the same round.
 Pairing cancels drift that moves a whole round up or down.
-Instruction counts are identical in every run. Cache-miss counts stayed within about $\pm5\%$ and throughput within about $\pm8\%$ on the quiet machine;
-an earlier run with light interactive use of the machine varied about twice as much.
+Instruction counts are identical in every run. Cache-miss counts stayed within about $\pm5\%$ on the quiet machine.
+Throughput usually stayed within about $\pm8\%$ but has occasional single-round outliers, which is one more reason rankings use misses.
+An earlier run with light interactive use of the machine varied about twice as much.
 A difference is treated as real only if it holds in every round.
 The machine was not used interactively during the reported run.
 
@@ -330,7 +334,8 @@ Table~\ref{tab:stages} records each milestone when it landed. The same single-th
 \subsection{What the counters say}
 \begin{table}[h]\centering
 \caption{\code{perf stat} on the slice, user space only, commit \code{\CountersCommit}. Median of \CountersReps{} interleaved runs per variant, min--max in brackets.
-Instruction counts were identical in every run. ``Paired'': rounds in which the variant missed more than per-book Fibonacci $W{=}8192$ (bold) in the same round.
+Instruction counts were identical in every run. ``Paired'': rounds in which the variant missed more than the reference, per-book Fibonacci $W{=}8192$ with 16-byte levels (bold), in the same round.
+All rows above the last two use 16-byte levels; $\star$ marks the new default.
 Probes per lookup come from a separate, untimed build of the same commit with probe counting compiled in.}\label{tab:counters}
 \small
 \begin{tabular}{l r r@{\,}l c r@{\,}l r}\toprule
@@ -342,7 +347,9 @@ per-book, Fibonacci, W=4096         & \CfibfI & \CfibfP & {\footnotesize(\CfibfP
 per-book, Fibonacci, W=1024         & \CfiboI & \CfiboP & {\footnotesize(\CfiboPlo--\CfiboPhi)} & \CfiboPair & \CfiboR & {\footnotesize(\CfiboRlo--\CfiboRhi)} & \DfiboAvg \\
 per-book, Fibonacci, W=512          & \CfibhI & \CfibhP & {\footnotesize(\CfibhPlo--\CfibhPhi)} & \CfibhPair & \CfibhR & {\footnotesize(\CfibhRlo--\CfibhRhi)} & \DfibhAvg \\\addlinespace
 global, identity, W=8192            & \CgidI  & \CgidP  & {\footnotesize(\CgidPlo--\CgidPhi)}   & \CgidPair  & \CgidR  & {\footnotesize(\CgidRlo--\CgidRhi)}   & \DgidAvg \\
-global, Fibonacci, W=8192           & \CgfibI & \CgfibP & {\footnotesize(\CgfibPlo--\CgfibPhi)} & \CgfibPair & \CgfibR & {\footnotesize(\CgfibRlo--\CgfibRhi)} & \DgfibAvg \\\bottomrule
+global, Fibonacci, W=8192           & \CgfibI & \CgfibP & {\footnotesize(\CgfibPlo--\CgfibPhi)} & \CgfibPair & \CgfibR & {\footnotesize(\CgfibRlo--\CgfibRhi)} & \DgfibAvg \\\addlinespace
+per-book, Fib., W=8192, 8-byte level & \CfiblI & \CfiblP & {\footnotesize(\CfiblPlo--\CfiblPhi)} & \CfiblPair & \CfiblR & {\footnotesize(\CfiblRlo--\CfiblRhi)} & \DfiblAvg \\
+$\star$ per-book, Fib., W=16384, 8-byte & \CfibwI & \CfibwP & {\footnotesize(\CfibwPlo--\CfibwPhi)} & \CfibwPair & \CfibwR & {\footnotesize(\CfibwRlo--\CfibwRhi)} & \DfibwAvg \\\bottomrule
 \end{tabular}
 \end{table}
 \CountersComment
@@ -376,7 +383,11 @@ Ladder width (8192 $\to$ 512) &
 Large win once the ladder fits in cache. &
 The opposite: misses per message \emph{rise} \PctWidthMiss{} (\CfibP{} $\to$ \CfibhP) and instructions \PctWidthInstr, monotonically with each halving.
 Overflow adds go from \DfibOv\,M to \DfibhOv\,M. \textbf{Prediction wrong.} &
-Keep 8192. Wider would double memory to catch about half of the remaining overflow (see below). \\\addlinespace
+With 16-byte levels keep 8192: wider doubles memory for half the remaining overflow. With 8-byte levels, 16{,}384 at the same memory (next row). \\\addlinespace
+Price level size (16 $\to$ 8 bytes) &
+Fewer misses: twice the levels per cache line, and the saved memory buys twice the width. &
+\PctLevelWideMiss{} fewer misses at the same memory (8 bytes, $W{=}16{,}384$), in every round of two sessions. Confirmed. &
+New default. A 32-bit share total was first checked on the full day (Section~\ref{sec:level}). \\\addlinespace
 Identity vs.\ Fibonacci hash &
 Identity wins on locality: NASDAQ refs are nearly sequential. &
 Per-book tables: Fibonacci \PctHashInstr{} fewer instructions, \PctHashMiss{} fewer misses, fewer in \CidPair{} rounds. Small but consistent. In one global table, identity is catastrophic (\GidInstrX$\times$ the instructions). &
@@ -411,7 +422,7 @@ Doubling the width would catch \OvTwoPct{} of them; \OvSubPct{} are sub-penny an
 For instruments first priced under about 41\,USD the window cannot extend below a price of zero, so doubling also extends it upwards by more than half a width, which makes \OvTwoPct{} a slight underestimate.
 On the cost side, a run at $W{=}8192$ already peaks at \RssGB\,GiB resident (ladders plus the mapped file), on a VM with 7\,GB; doubling the width would double the ladders' share.
 Extrapolating from the 4096$\to$8192 step, catching half of the remaining overflow would save roughly 5--9\% of misses, before paying for the larger footprint in page-table misses and page-cache pressure.
-That is not worth it here, so 8192 stays. A cheaper route to the same effect is a smaller \code{Level} (below).
+With 16-byte levels that is not worth it. Section~\ref{sec:level} makes the width affordable instead, by halving the level.
 
 \begin{table}[h]\centering\small
 \caption{Where overflow adds land at $W{=}8192$ (diagnostic build, untimed): which window around the same centre would have caught them.}\label{tab:ovwhere}
@@ -442,10 +453,73 @@ Consecutive messages usually belong to different instruments, so they hit unrela
 whereas a busy instrument's small table stays hot. The extra misses outweigh the saved book-object access.
 This explanation is consistent with the counters but has not been isolated by a separate measurement.
 
-\paragraph{Where the remaining misses come from.} \CfibP{} cache misses per message remain (median). The leading suspect is the
+\paragraph{Where the remaining misses come from.} With the new default, \CfibwP{} cache misses per message remain (median). The leading suspect is the
 \code{books} vector itself: 65{,}536 \code{LadderBook} objects indexed by an effectively random 16-bit locate on every message.
 That is a near-certain cold miss on the book object before any work starts. Mode~2 does not settle this: it skips the book object
 on about half of all messages but also changes the table's size, so the two effects cannot be separated.
+
+%=====================================================================
+\section{A faster default: the 8-byte price level}
+\label{sec:level}
+%=====================================================================
+Every other experiment in this paper corrected a claim, ruled out an idea, or confirmed the design already in place.
+This one made the engine faster. It is written out step by step, because \emph{why} it works, and why it is not an artefact of tuning to the benchmark, matters as much as the number.
+
+\subsection{The idea in plain terms}
+\paragraph{A shelf of boxes.} The ladder is a shelf with one box per price, one cent apart. Each box (a \code{Level}) holds two numbers:
+the total shares waiting at that price and how many orders make up that total. Finding a box is one subtraction and one division.
+A price that does not fit on the shelf goes into a side drawer, the overflow \code{std::map}, where finding it means a search through a tree.
+
+\paragraph{A desk and a warehouse.} The CPU works like a person at a small desk (the cache) next to a large warehouse (main memory).
+Anything on the desk is at hand; anything in the warehouse is a walk roughly a hundred times slower. A cache miss is one such walk, and this engine spends most of its time walking.
+The desk holds a fixed number of \emph{bytes}, so smaller boxes mean more of them on the desk and fewer walks.
+
+\paragraph{Change 1: smaller boxes.} A box stored its share total as a 64-bit number and its order count as a 32-bit number; alignment pads that to 16 bytes.
+Storing the total in 32 bits gives two 32-bit numbers, exactly 8 bytes with no padding, and exactly eight boxes per 64-byte cache line.
+(\code{alignas} cannot do this: it only ever \emph{raises} alignment and adds padding. Packing the original fields to 12 bytes would leave the 64-bit field misaligned and some boxes straddling two cache lines.)
+
+The only risk is overflow. A 32-bit counter holds up to about 4.29 billion; a level whose total exceeded that would wrap around, like an odometer rolling over, and the book would be silently wrong.
+So this was measured \emph{before} anything changed: over the full day (\LmMsgs{} messages) the fullest level ever held \LmShares{} shares, \LmPct{} of the limit, a \LmHeadroom$\times$ margin.
+The largest order count was \LmOrders. Every add also asserts that the total cannot wrap, and the full day runs with assertions on without one firing.
+
+\paragraph{Change 2: a longer shelf.} Section~\ref{sec:decisions} showed that the drawer is the expensive part and that a shorter shelf makes everything worse.
+A longer one would keep more orders out of the drawer, but with 16-byte boxes it needed more memory than the machine has.
+Halving the box frees exactly the memory needed to double the shelf. At 16{,}384 ticks with 8-byte levels the run peaks at \DfibwRss\,GiB, the same as the old default (\DfibRss\,GiB),
+and overflow adds on the slice fall from \DfibOv\,M to \DfibwOv\,M (\PctOvWide{} fewer). Each change helps on its own; together they unlock each other.
+
+\subsection{Results, in two separate sessions}
+\begin{table}[h]\centering
+\caption{The old default against the 8-byte level, median miss/msg and M\,msg/s. Session~1 compared only these three variants (\SoneReps{} interleaved rounds);
+session~2 is the full matrix of Table~\ref{tab:counters} (\CountersReps{} rounds), run later on the committed code. ``Fewer''/``faster'': rounds in which the variant beat the old default in the same round.}\label{tab:level}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l rr cc rr cc}\toprule
+ & \multicolumn{4}{c}{session 1} & \multicolumn{4}{c}{session 2} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+variant & miss/msg & M\,msg/s & fewer & faster & miss/msg & M\,msg/s & fewer & faster \\\midrule
+old default (16\,B, $W{=}8192$) & \SoneBaseP & \SoneBaseR & -- & -- & \StwoBaseP & \StwoBaseR & -- & -- \\
+8\,B, $W{=}8192$ & \SoneLP & \SoneLR & \SoneLFewer & \SoneLFaster & \StwoLP & \StwoLR & \CfiblFewer & \CfiblFaster \\
+new default (8\,B, $W{=}16384$) & \SoneWP & \SoneWR & \SoneWFewer & \SoneWFaster & \StwoWP & \StwoWR & \CfibwFewer & \CfibwFaster \\\bottomrule
+\end{tabular}
+\end{table}
+In session~2 the 8-byte level alone has \PctLevelMiss{} fewer misses and spends twice the width to reach \PctLevelWideMiss{} fewer; the median throughput rises \PctLevelSpeed{} and \PctLevelWideSpeed.
+Instructions rise slightly (\PctLevelInstr{} and \PctLevelWideInstr), and the saved misses more than pay for them.
+The miss counts of the two sessions agree to within about 1\%. Throughput is noisier inside the larger matrix, where ties and one loss appear, but the direction holds.
+
+\subsection{Why this is not overfitting}
+Overfitting a benchmark means trying settings until one happens to score well, and calling that an improvement. Five things argue against it here.
+\begin{enumerate}
+  \item \textbf{Prediction before measurement.} The chain was: the drawer is expensive (measured), width is limited by memory (measured), a smaller level frees memory (arithmetic), so the combination should help.
+        Two variants were built to test it, not a search over settings. The supporting quantities moved as the mechanism says: overflow adds fell, misses fell.
+  \item \textbf{Counted work, not only time.} Cache misses count physical events. They fell in every round of both sessions, which a lucky clock reading cannot produce.
+  \item \textbf{Paired rounds.} Variants alternate within each round, so drift moves them together. The new default had fewer misses in \SoneWFewer{} and \CfibwFewer{} rounds.
+  \item \textbf{Identical answers.} The end-of-day top of book for all 8{,}694 instruments is byte-for-byte identical to the old default, single- and multi-threaded, and the A/B check against the naive book finds no mismatch.
+  \item \textbf{Replication.} Session~2 ran later, inside the full matrix with its heavy variants, on the committed code, and reproduced session~1.
+\end{enumerate}
+
+\paragraph{Limits.} The 32-bit margin was measured on one trading day. It is \LmHeadroom$\times$, and debug builds check it on every add, but release builds do not:
+a day that broke it would produce wrong totals silently in a release build. A check that stays on in release builds would close that gap (Section~\ref{sec:future}).
+The width affects speed, never correctness: an order outside the window is still handled, by the slower overflow path. A day with wider price ranges could only shrink the gain.
+Speed was measured on the 2\,GB slice, because the full day does not fit in memory and its timings wait on the disk. On a machine with a larger cache the gain may be smaller.
 
 %=====================================================================
 \section{How we know it is right}
@@ -463,7 +537,7 @@ on about half of all messages but also changes the table's size, so the two effe
         The global-table variant (M2d) passes the same check with assertions on, plus an assertion on every message that the message's instrument matches the stored order's.
   \item \textbf{Threaded equals single-threaded, and every table layout agrees.} Both binaries dump the top of book for the 8{,}694 active instruments at the end.
         The files are byte-for-byte identical, so the queue neither dropped nor reordered a message. They are also identical across
-        \code{unordered\_map}, per-book and global tables.
+        \code{unordered\_map}, per-book and global tables, and between 16- and 8-byte levels at both widths.
 \end{enumerate}
 
 \paragraph{The limit of differential testing.} A diff catches disagreement, not a bug both sides share. Both books chose a side with
@@ -500,9 +574,15 @@ commits \code{\Commit} and \code{\CountersCommit}, built with assertions enabled
         A commit message described the guard that would have made the flag work, but the guard was never in the code.
         The width results here come from binaries that were checked to print the width they were asked for (Section~\ref{sec:method}).
         That version's counters were also counted for user and kernel; all counter results here are user space only and are not directly comparable with it.
+  \item \textbf{Absolute numbers move between sessions.} The same old-default binary measured 4.8\,M\,msg/s and 8.34 miss/msg in one session (the run committed with \code{5c39ac5})
+        and \StwoBaseR\,M\,msg/s and \StwoBaseP{} miss/msg two hours later, and every variant moved together.
+        One explanation, heat from the heaviest variant lowering the clock, was tested and refuted: session~2 contains that variant too. The cause is unknown.
+        Comparisons are therefore made only within one run, and all of Table~\ref{tab:counters} comes from a single run.
   \item \textbf{Full-day sample.} The first full-day pair was dropped because a package install overlapped it, leaving 9 pairs.
   \item \textbf{Two commits.} The threading measurements (Table~\ref{tab:m3}) ran on \code{\Commit}, the counter matrix on \code{\CountersCommit}.
-        The per-book path does the same work in both: the later commit makes the table a template shared with the global variant, adds that variant and probe counting behind compile flags, and prints the configuration.
+        The threading runs used that commit's defaults (16-byte levels, $W{=}8192$, identity hash) and have not been repeated with the new default.
+        Every counter variant passes its configuration explicitly, so the defaults do not affect Table~\ref{tab:counters}.
+        Session~1 of Table~\ref{tab:level} ran on the working tree that was then committed as \code{\CountersCommit}, with the same explicit flags.
         The probe and overflow counts come from separate, untimed builds of \code{\CountersCommit} with probe counting compiled in.
   \item \textbf{One trading day.} Every number comes from 30~January~2019. The message mix, and so the delete ratio, varies by day.
   \item \textbf{Throughput only.} There are no latency percentiles; a throughput figure says nothing about the tail.
@@ -517,8 +597,7 @@ commits \code{\Commit} and \code{\CountersCommit}, built with assertions enabled
   \item \textbf{Shard \code{apply} across consumers by \code{stock\_locate}.} Book updates are the bottleneck however many threads there are,
         and different instruments' books are independent.
   \item \textbf{Attack the book-object miss}: a compact locate-to-dense-index remap, or keeping hot book headers together.
-  \item \textbf{A smaller \code{Level}.} A level is 16 bytes (a 64-bit share total and a 32-bit count, padded). If share totals fit in 32 bits, which the data would have to confirm,
-        an 8-byte level halves the ladders' memory and cache footprint, and would allow twice the width at today's memory. Widening the current layout is not worth it (Section~\ref{sec:decisions}).
+  \item \textbf{An overflow guard in release builds.} The 32-bit share total is checked only by assertions. A cheap release-mode check (count or saturate on wrap) would make the data assumption fail loudly on any day.
   \item \textbf{Latency histograms} via \code{rdtsc}, per message type.
   \item \textbf{Pinned-core measurement} on bare-metal Linux.
   \item \textbf{M4: MoldUDP64} transport, gap detection and recovery.
@@ -537,12 +616,19 @@ git clone <repo> && cd itch-engine
 # slice: first 64,858,229 messages of the day (see results/make_slice.cpp)
 git checkout 5f9ee3c
 ./results/bench_m3.sh ~/data/itch_2gb.bin 25 m3_slice.txt
-git checkout 2d8d929
+git checkout 037b404
 REPS=5 ./results/bench_counters.sh                  # perf matrix, fresh builds, config-checked
-./results/bench_diag.sh                             # overflow and probe counts, untimed
+VARIANT_SET=level REPS=9 ./results/bench_counters.sh   # 16- vs 8-byte level only
+./results/bench_diag.sh                             # overflow, probes, memory; untimed
+./results/bench_levelmax.sh <full day file>         # 32-bit share total check
 g++-13 -std=c++23 -O2 -Isrc tests/test_spsc.cpp -o t && ./t
 \end{lstlisting}
-Raw run logs are in \code{results/}: \code{counters\_reps5.txt}, \code{diag.txt}, \code{m3\_slice.txt}, \code{m3\_full.txt}, \code{tests.txt}, \code{env.txt}.
-The superseded user+kernel matrix is kept as \code{counters.txt}.
+Raw run logs are in \code{results/}:
+\begin{itemize}
+  \item \code{counters\_reps5.txt}, \code{counters\_level\_reps9.txt}: counter matrix and the level comparison;
+  \item \code{diag.txt}, \code{levelmax\_fullday.txt}: probe, overflow and memory diagnostics, and the 32-bit check;
+  \item \code{m3\_slice.txt}, \code{m3\_full.txt}, \code{tests.txt}, \code{env.txt}: threading runs, unit tests, environment;
+  \item \code{counters.txt}: the superseded user+kernel matrix.
+\end{itemize}
 
 \end{document}

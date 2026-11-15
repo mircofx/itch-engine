@@ -12,3 +12,11 @@ exit=0
 == test_decode_side (built: g++-13 -std=c++23 -O2, asserts ON)
 all decode/side-validation tests passed
 exit=0
+
+# 2026-11-15T14:16:32+01:00 commit=037b404
+== test_spsc (built: g++-13 -std=c++23 -O2, asserts ON)
+all spsc tests passed
+exit=0
+== test_decode_side (built: g++-13 -std=c++23 -O2, asserts ON)
+all decode/side-validation tests passed
+exit=0
