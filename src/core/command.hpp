@@ -3,7 +3,7 @@
 #include <cstring>
 #include <vector>
 #include <type_traits>
-#include "../book/price_ladder.hpp"
+#include "../book/ladder_engine.hpp"
 #include "../itch/messages.hpp"
 
 // One book operation, flatten into a class. Crosses the queue between the parser thread and the book thread.
@@ -29,19 +29,19 @@ struct Command {
 };
 
 // The consumer's only entry point for mutating the book. Only ever called on the consumer thread, so the book needs no locks: exactly one thread writes it.
-inline void apply_command(std::vector<LadderBook>& books, const Command& c) {
+inline void apply_command(LadderEngine& books, const Command& c) {
     switch (c.op) {
-    case OP_ADD: 
-        books[c.locate].add(c.ref, c.side, c.price, c.shares); 
+    case OP_ADD:
+        books.add(c.locate, c.ref, c.side, c.price, c.shares);
         break;
-    case OP_REDUCE: 
-        books[c.locate].reduce(c.ref, c.shares); 
+    case OP_REDUCE:
+        books.reduce(c.locate, c.ref, c.shares);
         break;
     case OP_ERASE:
-        books[c.locate].erase(c.ref);
+        books.erase(c.locate, c.ref);
         break;
     case OP_REPLACE:
-        books[c.locate].replace(c.ref, c.new_ref, c.new_price, c.new_shares);
+        books.replace(c.locate, c.ref, c.new_ref, c.new_price, c.new_shares);
         break;
     }
 }

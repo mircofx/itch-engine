@@ -21,6 +21,8 @@
 
 int main(int argc, char** argv) {
 	if (argc < 2) { std::fprintf(stderr, "usage: %s <itch_file>\n", argv[0]); return 1; }
+	// What this binary was actually compiled with. bench_counters.sh checks this line against the flags it passed, so a -D that nothing reads can't silently produce a "variant".
+	std::printf("config   : BOOK_MODE=%d TABLE_MODE=%d HASH_MODE=%d LADDER_WIDTH=%d\n", BOOK_MODE, TABLE_MODE, HASH_MODE, LADDER_WIDTH);
 
 	OrderTable t;
 	const uint64_t N = 5000;
@@ -66,8 +68,7 @@ int main(int argc, char** argv) {
 	books_naive.resize(65536);				// stock_locate is u16  
 #endif // USE_NAIVE
 #if USE_LADDER
-	std::vector<LadderBook> books_fast;		// indexed by stock_locate
-	books_fast.resize(65536);				// stock_locate is u16
+	LadderEngine books_fast;				// 65536 books indexed by stock_locate (+ the global order table in TABLE_MODE 2)
 #endif // USE_LADDER
 
 	const auto t0 = std::chrono::steady_clock::now();
@@ -297,9 +298,8 @@ int main(int argc, char** argv) {
 #endif
 
 #if USE_LADDER
-	uint64_t lad_missing = 0, lad_overflow = 0, lad_subtick = 0;
+	uint64_t lad_missing = books_fast.missing_refs(), lad_overflow = 0, lad_subtick = 0;
 	for (const auto& b : books_fast) {
-		lad_missing += b.missing_refs();
 		lad_overflow += b.overflows();
 		lad_subtick += b.subticks();
 	}

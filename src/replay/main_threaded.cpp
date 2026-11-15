@@ -1,5 +1,5 @@
 #include "../replay/mmap_reader.hpp"
-#include "../book/price_ladder.hpp"
+#include "../book/ladder_engine.hpp"
 #include "../core/spsc_queue.hpp"
 #include "../core/command.hpp"
 #include <atomic>
@@ -37,7 +37,7 @@ static void producer(const MmapReader& r, SpscQueue<Command, 1 << 16>& q, std::a
 }
 
 // Pop Commands, apply to the book. Touches only the queue and the book.
-static void consumer(std::vector<LadderBook>& books, SpscQueue<Command, 1 << 16>& q, std::atomic<bool>& done) {
+static void consumer(LadderEngine& books, SpscQueue<Command, 1 << 16>& q, std::atomic<bool>& done) {
     Command c;
     uint64_t popped = 0;
 
@@ -67,9 +67,9 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	std::printf("config   : TABLE_MODE=%d HASH_MODE=%d LADDER_WIDTH=%d\n", TABLE_MODE, HASH_MODE, LADDER_WIDTH);
 	MmapReader r(argv[1]);
-	std::vector<LadderBook> books;
-	books.resize(65536);
+	LadderEngine books;		// 65536 books indexed by stock_locate (+ the global order table in TABLE_MODE 2)
 
 	SpscQueue<Command, 1 << 16> queue;
 	std::atomic<bool> done{ false };

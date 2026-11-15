@@ -8,20 +8,35 @@
 
 // LadderBook (the fast one) stores price levels in a flat array where the price is the index. levels[(price - base) / 100] and you're there. One arithmetic operation, one memory access, and neighbouring price levels sit next to each other in memory, so the CPU's prefetcher works in your favour.
 
+// Build-variant switches. #ifndef so -D on the command line wins. Every binary prints the values it was compiled with (main.cpp, main_threaded.cpp) and bench_counters.sh refuses to record a run whose printed config doesn't match what it asked for.
+// History: until this guard existed, WIDTH was a hard-coded 8192 and -DLADDER_WIDTH was silently ignored, so the original width sweep compared four identical binaries.
+#ifndef LADDER_WIDTH
+#define LADDER_WIDTH 8192
+#endif
+#ifndef TABLE_MODE
+#define TABLE_MODE 1        // 0 = std::unordered_map per book, 1 = OrderTable per book, 2 = one global table (ladder_engine.hpp)
+#endif
+#if TABLE_MODE < 0 || TABLE_MODE > 2
+#error "TABLE_MODE must be 0, 1 or 2"
+#endif
+static_assert(LADDER_WIDTH > 0, "LADDER_WIDTH must be positive");
+
+// What an order needs to remember about the level it rests on (TABLE_MODE 2).
+struct LevelRef {
+	Level* lvl;
+	bool in_overflow;
+};
+
 class LadderBook {
 	static constexpr uint32_t TICK = 100;
-	static constexpr uint32_t WIDTH = 8192;			// circa 81.92USD window. Sized to avoid overflow, not for cache. Width has ~no effect on miss/msg (ref README)
+	static constexpr uint32_t WIDTH = LADDER_WIDTH;	// 8192 = circa 81.92USD window, sized to avoid overflow
 	uint64_t miss_reduce_ = 0, miss_erase_ = 0, miss_replace_ = 0;
-
-#ifndef TABLE_MODE
-#define TABLE_MODE 1        // 0 = std::unordered_map, 1 = OrderTable
-#endif
 
 #if TABLE_MODE == 0
 	MapOrderTable orders_;
-#else
+#elif TABLE_MODE == 1
 	OrderTable orders_;
-#endif
+#endif	// TABLE_MODE 2: no per-book table, LadderEngine owns the global one
 	std::vector<Level> bid_levels_;
 	std::vector<Level> ask_levels_;
 
@@ -100,6 +115,41 @@ class LadderBook {
 	}
 
 public:
+	// --- level-only API, used by TABLE_MODE 2 where the order lives in the global table ---
+	// Same level accounting as add()/reduce()/erase() below, minus the order lookup.
+
+	LevelRef add_to_level(char side, uint32_t price, uint32_t shares) {
+		ensure_init(price);
+		if ((price % TICK) != 0) subtick_count++;
+
+		uint32_t idx = 0;
+		if (to_slot(price, idx)) {
+			Level& lvl = side_levels(side)[idx];
+			lvl.total_shares += shares;
+			lvl.order_count += 1;
+			if (side == 'B' && idx > best_bid_hint_)
+			{
+				best_bid_hint_ = idx;
+			}
+			if (side == 'S' && idx < best_ask_hint_)
+			{
+				best_ask_hint_ = idx;
+			}
+			return { &lvl, false };
+		}
+		overflow_count++;
+		Level& lvl = side_overflow(side)[price];
+		lvl.total_shares += shares;
+		lvl.order_count += 1;
+		return { &lvl, true };
+	}
+
+	// Called only when an overflow level's last order leaves. Ladder levels are never removed, an empty one just has order_count 0.
+	void drop_overflow_level(char side, uint32_t price) {
+		side_overflow(side).erase(price);
+	}
+
+#if TABLE_MODE != 2
 	void add(uint64_t ref, char side, uint32_t price, uint32_t shares) {
 		ensure_init(price);
 		if ((price % TICK) != 0) subtick_count++;
@@ -188,6 +238,7 @@ public:
 		erase(old_ref);
 		add(new_ref, side, new_price, new_shares);
 	}
+#endif	// TABLE_MODE != 2
 
 	// Best price may live in the ladder OR in the overflow map. Check both, take the better. Bids want the highest price, asks the lowest.
 	bool best_bid(uint32_t& price, uint64_t& shares) const {

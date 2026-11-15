@@ -22,8 +22,11 @@ public:
 	uint32_t size() const noexcept { return uint32_t(m_.size()); }
 };
 
-class OrderTable {
-	std::vector<Slot> slots_;
+// Open-addressed table, generic over the slot type so the per-instrument table (Slot, TABLE_MODE 1) and the global one (GlobalSlot, TABLE_MODE 2) share one probing/deletion implementation.
+// S needs a uint64_t `ref` member with 0 reserved as the empty marker.
+template <class S>
+class OpenTable {
+	std::vector<S> slots_;
 	uint32_t mask_ = 0;
 	uint32_t size_ = 0;
 	uint32_t log2_cap_ = 0;
@@ -50,10 +53,10 @@ class OrderTable {
 	}
 
 	void grow() {
-		std::vector<Slot> old = std::move(slots_);
+		std::vector<S> old = std::move(slots_);
 		const uint32_t new_log2 = (log2_cap_ == 0) ? INITIAL_LOG2 : log2_cap_ + 1;
 		rebuild(new_log2);
-		for (const Slot& s : old) {
+		for (const S& s : old) {
 			if (s.ref == 0) continue;
 			uint32_t i = index_of(s.ref);
 			while (slots_[i].ref != 0) i = (i + 1) & mask_;
@@ -65,19 +68,19 @@ class OrderTable {
 	void rebuild(uint32_t new_log2) {
 		log2_cap_ = new_log2;
 		const uint32_t cap = 1u << log2_cap_;
-		slots_.assign(cap, Slot{ 0,0,0,0 });
+		slots_.assign(cap, S{});
 		mask_ = cap - 1;
 		size_ = 0;
 	}
 public:
-	OrderTable() {
+	OpenTable() {
 		rebuild(INITIAL_LOG2);
 	}
 
 	uint32_t size() const noexcept { return size_; }
 	uint32_t capacity() const noexcept { return mask_ + 1; }
 
-	Slot* find(uint64_t ref) noexcept {
+	S* find(uint64_t ref) noexcept {
 		uint32_t i = index_of(ref);
 		for (;;) {
 			if (slots_[i].ref == ref) {
@@ -91,7 +94,8 @@ public:
 		}
 	}
 
-	void insert(uint64_t ref, uint32_t price, uint32_t shares, char side) {
+	void insert(const S& s) {
+		const uint64_t ref = s.ref;
 		assert(ref != 0 && "ref 0 collides with the empty sentinel");
 
 		// Grow when this insert would push occupancy past 50%, not 80-90% like most open-addressing tables. Below 50%, a probe is more likely to land on an empty slot fast; 
@@ -108,15 +112,20 @@ public:
 		if (slots_[i].ref == 0) {
 			++size_;
 		}
-		slots_[i] = Slot{ ref, price, shares, side };
+		slots_[i] = s;
 	}
 
 	bool erase(uint64_t ref) noexcept {
-		Slot* s = find(ref);
+		S* s = find(ref);
 		if (s == nullptr) {
 			return false;
 		}
+		erase_at(s);
+		return true;
+	}
 
+	// Erase a slot the caller already found, so a find-then-erase costs one probe sequence, not two. s is invalid afterwards (backward shift may move another entry into it).
+	void erase_at(S* s) noexcept {
 		uint32_t i = uint32_t(s - slots_.data());
 		slots_[i].ref = 0;
 		--size_;
@@ -131,6 +140,14 @@ public:
 			}
 			j = (j + 1) & mask_;
 		}
-		return true;
+	}
+};
+
+// TABLE_MODE 1: the per-instrument table, same API as before so LadderBook's call sites are unchanged.
+class OrderTable : public OpenTable<Slot> {
+public:
+	using OpenTable<Slot>::insert;
+	void insert(uint64_t ref, uint32_t price, uint32_t shares, char side) {
+		OpenTable<Slot>::insert(Slot{ ref, price, shares, side });
 	}
 };
