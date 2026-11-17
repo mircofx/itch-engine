@@ -58,6 +58,19 @@ class LadderBook {
 
 	uint32_t to_price(uint32_t idx) const { return base_ + idx * TICK; }
 
+	// Release-mode guard for the 32-bit share total (LEVEL_BYTES 8). The full-day check peaked at 0.11% of UINT32_MAX, so this never fires on known
+	// data; if a day ever breaks it, the wrap is counted and printed ("wraps=") instead of corrupting totals silently. Never taken in practice, so the
+	// branch predicts perfectly. Debug builds still assert. With LEVEL_BYTES 16 the comparison is constant-false and folds away.
+	uint64_t wrap_count_ = 0;
+	void add_shares(Level& lvl, uint32_t shares) noexcept {
+		const uint64_t sum = uint64_t(lvl.total_shares) + shares;
+		if (sum > std::numeric_limits<decltype(lvl.total_shares)>::max()) [[unlikely]] {
+			assert(false && "level share total would wrap");
+			++wrap_count_;
+		}
+		lvl.total_shares += shares;
+	}
+
 #ifdef PROBE_STATS
 public:
 	// Diagnostics only: where overflow adds land. near/mid/wide/far = caught by a window 2x/4x/16x as wide around the same centre, or not even then.
@@ -157,8 +170,7 @@ public:
 		uint32_t idx = 0;
 		if (to_slot(price, idx)) {
 			Level& lvl = side_levels(side)[idx];
-			assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
-			lvl.total_shares += shares;
+			add_shares(lvl, shares);
 			lvl.order_count += 1;
 			TRACK_LEVEL_MAX(lvl);
 			if (side == 'B' && idx > best_bid_hint_)
@@ -174,8 +186,7 @@ public:
 		overflow_count++;
 		CLASSIFY_OVERFLOW(price);
 		Level& lvl = side_overflow(side)[price];
-		assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
-		lvl.total_shares += shares;
+		add_shares(lvl, shares);
 		lvl.order_count += 1;
 		TRACK_LEVEL_MAX(lvl);
 		return { &lvl, true };
@@ -194,8 +205,7 @@ public:
 		uint32_t idx = 0;
 		if (to_slot(price, idx)) {
 			Level& lvl = side_levels(side)[idx];
-			assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
-			lvl.total_shares += shares;
+			add_shares(lvl, shares);
 			lvl.order_count += 1;
 			TRACK_LEVEL_MAX(lvl);
 			if (side == 'B' && idx > best_bid_hint_)
@@ -211,8 +221,7 @@ public:
 			overflow_count++;
 			CLASSIFY_OVERFLOW(price);
 			Level& lvl = side_overflow(side)[price];
-			assert(uint64_t(lvl.total_shares) + shares <= std::numeric_limits<decltype(lvl.total_shares)>::max() && "level share total would wrap");
-			lvl.total_shares += shares;
+			add_shares(lvl, shares);
 			lvl.order_count += 1;
 			TRACK_LEVEL_MAX(lvl);
 		}
@@ -349,6 +358,7 @@ public:
 
 	uint64_t missing_refs() const noexcept { return missing_ref_count; }
 	uint64_t overflows()    const noexcept { return overflow_count; }
+	uint64_t wraps()        const noexcept { return wrap_count_; }
 #if defined(PROBE_STATS) && TABLE_MODE == 1
 	const OrderTable& order_table() const noexcept { return orders_; }
 #endif

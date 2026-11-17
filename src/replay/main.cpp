@@ -298,13 +298,15 @@ int main(int argc, char** argv) {
 #endif
 
 #if USE_LADDER
-	uint64_t lad_missing = books_fast.missing_refs(), lad_overflow = 0, lad_subtick = 0;
+	uint64_t lad_missing = books_fast.missing_refs(), lad_overflow = 0, lad_subtick = 0, lad_wraps = 0;
 	for (const auto& b : books_fast) {
 		lad_overflow += b.overflows();
 		lad_subtick += b.subticks();
+		lad_wraps += b.wraps();
 	}
-	std::printf("ladder   : missing=%lu overflow=%lu subtick=%lu\n",
-		lad_missing, lad_overflow, lad_subtick);
+	std::printf("ladder   : missing=%lu overflow=%lu subtick=%lu wraps=%lu%s\n",
+		lad_missing, lad_overflow, lad_subtick, lad_wraps,
+		lad_wraps ? "  LEVEL SHARE TOTAL WRAPPED: totals are wrong, rebuild with -DLEVEL_BYTES=16" : "");
 #if defined(PROBE_STATS) && TABLE_MODE >= 1
 	{
 		const auto p = books_fast.probe_stats();

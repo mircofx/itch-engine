@@ -87,6 +87,9 @@ int main(int argc, char** argv) {
 
 	// best bid/ask for the first few active books, for eyeballing correctness
 	std::printf("threaded done in %.3f s\n", secs);
+	uint64_t wraps = 0;
+	for (const auto& b : books) wraps += b.wraps();
+	std::printf("wraps    : %lu%s\n", wraps, wraps ? "  LEVEL SHARE TOTAL WRAPPED: totals are wrong, rebuild with -DLEVEL_BYTES=16" : "");
 	int shown = 0;
 	for (size_t i = 0; i < books.size() && shown < 5; ++i) {
 		uint32_t bp;
